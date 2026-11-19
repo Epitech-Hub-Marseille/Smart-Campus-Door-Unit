@@ -36,6 +36,7 @@ data class DisplayShow(
     val capacity: Boolean = true,
     val clock: Boolean = true,
     val announcements: Boolean = true,
+    val nextReservation: Boolean = true,
 )
 
 @Serializable
@@ -86,7 +87,23 @@ data class AudioPlay(
     val assetId: String,
     val sha256: String,
     val size: Long,
+    /** Emergencies only: plays at full volume and ignores quiet hours. */
+    val urgent: Boolean = false,
 )
+
+/** One booking of the room, times in ms since epoch (server time, like every other timestamp). */
+@Serializable
+data class Reservation(
+    val id: String,
+    val title: String,
+    val start: Long,
+    val end: Long,
+    val organizer: String? = null,
+)
+
+/** The upcoming bookings of [roomId] (at most five). The screen shows the current or next one that has not ended. */
+@Serializable
+data class ReservationList(val roomId: String, val items: List<Reservation> = emptyList())
 
 /** An emergency takes over the screen and sounds an alarm until it is cleared. */
 @Serializable
@@ -148,7 +165,9 @@ sealed interface ServerMessage {
     data class AnnounceClear(override val id: String, val announcementId: String) : ServerMessage
     data class AudioPlayRequest(override val id: String, val value: AudioPlay) : ServerMessage
     data class EmergencySet(override val id: String, val value: Emergency) : ServerMessage
-    data class EmergencyClear(override val id: String, val emergencyId: String) : ServerMessage
+    /** [message] is the end-of-emergency notice, shown for [noticeSeconds] (the screen's own default when absent). */
+    data class EmergencyClear(override val id: String, val emergencyId: String, val message: String? = null, val noticeSeconds: Int? = null) : ServerMessage
+    data class ReservationsSet(override val id: String, val value: ReservationList) : ServerMessage
     data class RegistrationModeSet(override val id: String, val value: RegistrationWindow) : ServerMessage
 
     /**
@@ -212,7 +231,13 @@ private fun decode(id: String, type: String, payload: JsonObject): ServerMessage
         "announce.clear" -> ServerMessage.AnnounceClear(id, payload["announcementId"]!!.jsonPrimitive.content)
         "audio.play" -> ServerMessage.AudioPlayRequest(id, payload.decode())
         "emergency.set" -> ServerMessage.EmergencySet(id, payload.decode())
-        "emergency.clear" -> ServerMessage.EmergencyClear(id, payload["emergencyId"]!!.jsonPrimitive.content)
+        "emergency.clear" -> ServerMessage.EmergencyClear(
+            id,
+            payload["emergencyId"]!!.jsonPrimitive.content,
+            payload["message"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() },
+            payload["noticeSeconds"]?.jsonPrimitive?.long?.toInt(),
+        )
+        "reservations.set" -> ServerMessage.ReservationsSet(id, payload.decode())
         "registration.mode.set" -> ServerMessage.RegistrationModeSet(id, payload.decode())
         "card.result" -> ServerMessage.CardResult(
             id,

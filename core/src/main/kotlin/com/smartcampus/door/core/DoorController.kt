@@ -238,7 +238,7 @@ class DoorController(
             handleAudio(message)
             return
         }
-        update(_door.value.apply(message))
+        update(_door.value.apply(message, clock()))
         remember(message.id)
         acknowledge(message.id)
         report()
@@ -247,7 +247,8 @@ class DoorController(
     private suspend fun handleAudio(message: ServerMessage.AudioPlayRequest) {
         val request = message.value
         val state = _door.value
-        if (state.audio.quietHours.contains(state.localTime(clock(), zone))) {
+        // An urgent broadcast (an emergency read-out) must be heard whatever the settings say.
+        if (!request.urgent && state.audio.quietHours.contains(state.localTime(clock(), zone))) {
             // Acknowledged on purpose: the server must not replay a broadcast we deliberately stayed silent for.
             remember(message.id)
             acknowledge(message.id)
@@ -264,7 +265,8 @@ class DoorController(
         }
         remember(message.id)
         acknowledge(message.id)
-        scope.launch { runCatching { player.play(file, state.audio.volume) } }
+        val volume = if (request.urgent) 100 else state.audio.volume
+        scope.launch { runCatching { player.play(file, volume) } }
     }
 
     /** Sends the state the console draws its live preview from. */

@@ -1,6 +1,7 @@
 package com.smartcampus.door.ui
 
 import android.app.Activity
+import android.graphics.Typeface
 import android.view.WindowManager
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -32,6 +33,7 @@ import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.WifiOff
 import androidx.compose.material3.Icon
+import androidx.compose.material3.ProvideTextStyle
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
@@ -45,6 +47,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.platform.LocalDensity
@@ -56,6 +60,8 @@ import com.smartcampus.door.core.protocol.Announcement
 import com.smartcampus.door.core.protocol.DisplayConfig
 import com.smartcampus.door.core.protocol.Reservation
 import com.smartcampus.door.core.state.DoorState
+import com.smartcampus.door.core.theme.ResolvedTheme
+import com.smartcampus.door.core.theme.resolve
 import com.smartcampus.door.core.state.isAsleep
 import com.smartcampus.door.core.state.localTime
 import kotlinx.coroutines.delay
@@ -125,19 +131,49 @@ private fun DimWhileAsleep(asleep: Boolean, bright: Boolean) {
 
 private data class Palette(val background: Color, val surface: Color, val text: Color, val muted: Color)
 
-private fun paletteFor(config: DisplayConfig) =
-    if (config.theme == "light") Palette(Color(0xFFF3F6F4), Color.White, Color(0xFF14231B), Color(0xFF5D6D64))
-    else Palette(Color(0xFF0E0F10), Color(0xFF1A1D1F), Color(0xFFE8F1EC), Color(0xFF8A9A92))
+/**
+ * The colours of the screen: the unit's display configuration, then the theme on top. A theme can force light or dark, and
+ * can give any of the four colours; a colour it leaves out keeps the base of the mode.
+ */
+private fun paletteFor(config: DisplayConfig, theme: ResolvedTheme): Palette {
+    val dark = when (theme.mode) {
+        "dark" -> true
+        "light" -> false
+        else -> config.theme != "light"
+    }
+    val base =
+        if (dark) Palette(Color(0xFF0E0F10), Color(0xFF1A1D1F), Color(0xFFE8F1EC), Color(0xFF8A9A92))
+        else Palette(Color(0xFFF3F6F4), Color.White, Color(0xFF14231B), Color(0xFF5D6D64))
+    return Palette(
+        background = theme.background?.let(::Color) ?: base.background,
+        surface = theme.surface?.let(::Color) ?: base.surface,
+        text = theme.text?.let(::Color) ?: base.text,
+        muted = theme.muted?.let(::Color) ?: base.muted,
+    )
+}
+
+/** The typeface of a theme's font family; null keeps the app's own. */
+private fun fontFamilyFor(name: String?): FontFamily? = when (name) {
+    "system" -> FontFamily.Default
+    "sans" -> FontFamily.SansSerif
+    "serif" -> FontFamily.Serif
+    "mono" -> FontFamily.Monospace
+    "condensed" -> FontFamily(Typeface.create("sans-serif-condensed", Typeface.NORMAL))
+    else -> null
+}
 
 @Composable
 private fun DoorContent(door: DoorState, online: Boolean, now: Long) {
-    val palette = paletteFor(door.config)
-    val accent = parseColor(door.config.accentColor)
+    // The theme only dresses the everyday screen. The emergency and end-of-alert screens never come through here.
+    val theme = remember(door.theme) { door.theme.resolve() }
+    val palette = paletteFor(door.config, theme)
+    val accent = theme.primary?.let(::Color) ?: parseColor(door.config.accentColor)
     val announcements = if (door.config.show.announcements) door.visibleAnnouncements(now) else emptyList()
 
+    ProvideTextStyle(TextStyle(fontFamily = fontFamilyFor(theme.fontFamily))) {
     BoxWithConstraints(Modifier.fillMaxSize().background(palette.background)) {
         val landscape = maxWidth > maxHeight
-        val s = Scale(minOf(maxWidth, maxHeight), LocalDensity.current)
+        val s = Scale(minOf(maxWidth, maxHeight), LocalDensity.current, theme.textScale, theme.radiusUnits)
         Box(Modifier.fillMaxSize().padding(s.dp(6f))) {
             // Symptom: in portrait the split layout gave each column half of a narrow screen and the status label
             // broke in the middle of a word. Fix: side by side only on a landscape screen, stacked otherwise.
@@ -159,11 +195,12 @@ private fun DoorContent(door: DoorState, online: Boolean, now: Long) {
             if (!online) OfflineBadge(s, Modifier.align(Alignment.TopEnd))
         }
     }
+    }
 }
 
 @Composable
 private fun AnnouncementPanel(announcements: List<Announcement>, palette: Palette, accent: Color, s: Scale, modifier: Modifier) {
-    Column(modifier.clip(RoundedCornerShape(s.dp(4f))).background(palette.surface).padding(s.dp(4f)), verticalArrangement = Arrangement.spacedBy(s.dp(3f))) {
+    Column(modifier.clip(RoundedCornerShape(s.corner(4f))).background(palette.surface).padding(s.dp(4f)), verticalArrangement = Arrangement.spacedBy(s.dp(3f))) {
         Text("Announcements", color = palette.muted, fontSize = s.sp(4.6f), lineHeight = s.sp(5.8f))
         if (announcements.isEmpty()) Text("Nothing to show.", color = palette.muted, fontSize = s.sp(5f), lineHeight = s.sp(6.2f))
         announcements.take(3).forEach { AnnouncementBanner(it, palette, accent, s) }
@@ -231,7 +268,7 @@ private fun StatusBand(door: DoorState, accent: Color, palette: Palette, s: Scal
     val status = door.status
     val color = status?.let { parseColor(it.color, accent) } ?: palette.muted
     Row(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(s.dp(4f))).background(color.copy(alpha = 0.15f)).padding(horizontal = s.dp(5f), vertical = s.dp(4f)),
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(s.corner(4f))).background(color.copy(alpha = 0.15f)).padding(horizontal = s.dp(5f), vertical = s.dp(4f)),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(s.dp(3.5f)),
     ) {
@@ -251,7 +288,7 @@ private fun priorityColor(priority: String, accent: Color) = when (priority) {
 @Composable
 private fun AnnouncementBanner(announcement: Announcement, palette: Palette, accent: Color, s: Scale) {
     val color = priorityColor(announcement.priority, accent)
-    Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min).clip(RoundedCornerShape(s.dp(3f))).background(color.copy(alpha = 0.14f))) {
+    Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min).clip(RoundedCornerShape(s.corner(3f))).background(color.copy(alpha = 0.14f))) {
         Box(Modifier.width(s.dp(1.6f)).fillMaxHeight().background(color))
         Column(Modifier.padding(s.dp(3.5f)), verticalArrangement = Arrangement.spacedBy(s.dp(1f))) {
             announcement.title?.takeIf { it.isNotBlank() }?.let {

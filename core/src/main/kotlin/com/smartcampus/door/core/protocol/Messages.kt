@@ -36,6 +36,7 @@ data class DisplayShow(
     val capacity: Boolean = true,
     val clock: Boolean = true,
     val announcements: Boolean = true,
+    val nextReservation: Boolean = true,
 )
 
 @Serializable
@@ -46,6 +47,42 @@ data class DisplayConfig(
     val show: DisplayShow = DisplayShow(),
     val sleep: TimeWindow = TimeWindow(),
 )
+
+/** The colours a theme may set, as "#rrggbb". Whatever it leaves out keeps the app's own. */
+@Serializable
+data class ThemeColors(
+    val background: String? = null,
+    val surface: String? = null,
+    val text: String? = null,
+    val muted: String? = null,
+    val primary: String? = null,
+    val primaryText: String? = null,
+    val border: String? = null,
+    val success: String? = null,
+    val warning: String? = null,
+    val danger: String? = null,
+)
+
+@Serializable
+data class ThemeTypography(val fontFamily: String? = null, val scale: Double? = null)
+
+@Serializable
+data class ThemeShape(val radius: Int? = null)
+
+@Serializable
+data class ThemeTokens(
+    val mode: String? = null,
+    val colors: ThemeColors = ThemeColors(),
+    val typography: ThemeTypography = ThemeTypography(),
+    val shape: ThemeShape = ThemeShape(),
+)
+
+/**
+ * A visual theme (see `packages/protocol/src/theme.ts` on the server). The CSS the server may send to Faculty screens
+ * is not read here: a door unit is not a web page.
+ */
+@Serializable
+data class Theme(val id: String, val name: String, val version: Int, val tokens: ThemeTokens = ThemeTokens())
 
 @Serializable
 data class AudioSettings(val volume: Int = 80, val quietHours: TimeWindow = TimeWindow())
@@ -86,7 +123,23 @@ data class AudioPlay(
     val assetId: String,
     val sha256: String,
     val size: Long,
+    /** Emergencies only: plays at full volume and ignores quiet hours. */
+    val urgent: Boolean = false,
 )
+
+/** One booking of the room, times in ms since epoch (server time, like every other timestamp). */
+@Serializable
+data class Reservation(
+    val id: String,
+    val title: String,
+    val start: Long,
+    val end: Long,
+    val organizer: String? = null,
+)
+
+/** The upcoming bookings of [roomId] (at most five). The screen shows the current or next one that has not ended. */
+@Serializable
+data class ReservationList(val roomId: String, val items: List<Reservation> = emptyList())
 
 /** An emergency takes over the screen and sounds an alarm until it is cleared. */
 @Serializable
@@ -144,11 +197,15 @@ sealed interface ServerMessage {
     data class RoomInfoSet(override val id: String, val value: RoomInfo) : ServerMessage
     data class DisplayConfigSet(override val id: String, val config: DisplayConfig) : ServerMessage
     data class AudioSettingsSet(override val id: String, val value: AudioSettings) : ServerMessage
+    /** [theme] is null to go back to the app's own look. */
+    data class ThemeSet(override val id: String, val theme: Theme?) : ServerMessage
     data class AnnounceShow(override val id: String, val value: Announcement) : ServerMessage
     data class AnnounceClear(override val id: String, val announcementId: String) : ServerMessage
     data class AudioPlayRequest(override val id: String, val value: AudioPlay) : ServerMessage
     data class EmergencySet(override val id: String, val value: Emergency) : ServerMessage
-    data class EmergencyClear(override val id: String, val emergencyId: String) : ServerMessage
+    /** [message] is the end-of-emergency notice, shown for [noticeSeconds] (the screen's own default when absent). */
+    data class EmergencyClear(override val id: String, val emergencyId: String, val message: String? = null, val noticeSeconds: Int? = null) : ServerMessage
+    data class ReservationsSet(override val id: String, val value: ReservationList) : ServerMessage
     data class RegistrationModeSet(override val id: String, val value: RegistrationWindow) : ServerMessage
 
     /**
@@ -208,11 +265,18 @@ private fun decode(id: String, type: String, payload: JsonObject): ServerMessage
         "room.info.set" -> ServerMessage.RoomInfoSet(id, payload.decode())
         "display.config.set" -> ServerMessage.DisplayConfigSet(id, payload["config"]!!.jsonObject.decode())
         "audio.settings.set" -> ServerMessage.AudioSettingsSet(id, payload.decode())
+        "theme.set" -> ServerMessage.ThemeSet(id, payload["theme"]?.takeIf { it is JsonObject }?.jsonObject?.decode())
         "announce.show" -> ServerMessage.AnnounceShow(id, payload.decode())
         "announce.clear" -> ServerMessage.AnnounceClear(id, payload["announcementId"]!!.jsonPrimitive.content)
         "audio.play" -> ServerMessage.AudioPlayRequest(id, payload.decode())
         "emergency.set" -> ServerMessage.EmergencySet(id, payload.decode())
-        "emergency.clear" -> ServerMessage.EmergencyClear(id, payload["emergencyId"]!!.jsonPrimitive.content)
+        "emergency.clear" -> ServerMessage.EmergencyClear(
+            id,
+            payload["emergencyId"]!!.jsonPrimitive.content,
+            payload["message"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() },
+            payload["noticeSeconds"]?.jsonPrimitive?.long?.toInt(),
+        )
+        "reservations.set" -> ServerMessage.ReservationsSet(id, payload.decode())
         "registration.mode.set" -> ServerMessage.RegistrationModeSet(id, payload.decode())
         "card.result" -> ServerMessage.CardResult(
             id,

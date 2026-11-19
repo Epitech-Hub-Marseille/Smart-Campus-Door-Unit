@@ -21,6 +21,7 @@ The **door unit** of Smart Campus (EPITECH Marseille, TEK 3): the Android app th
 - **Digital twin**: on connection the server sends the full desired state (`session.ready`); the app converges on it, then replays pending commands. The app persists its state, so it shows the last known state through an outage and a restart.
 - **Commands are idempotent**: recent command ids are remembered; a replayed command is acknowledged again, never run twice.
 - **Audio never travels in JSON**: `audio.play` carries an asset id, SHA-256 and size; the app downloads over HTTPS with a request signed by its key and verifies the hash. Emergency alarms are the exception: they are **synthesised on the device** (`AlarmSynth`), so they work offline and cannot be tampered with in transit.
+- **Themes** (`theme.set`) dress the everyday door screen only: colours, mode, font, text scale and corner radius, read defensively in `core/.../theme/ThemeResolver.kt`. They never reach the emergency or end-of-alert screens.
 - **Emergency alerts** override everything: full screen, alarm on the alarm stream at full level (a test uses its own volume and respects quiet hours), wake from night sleep. They end only on `emergency.clear` or a desired state without an emergency.
 
 ## Repository layout

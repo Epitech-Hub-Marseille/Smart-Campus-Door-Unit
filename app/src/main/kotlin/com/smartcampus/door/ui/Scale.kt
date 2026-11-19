@@ -20,10 +20,20 @@ import androidx.compose.ui.unit.TextUnit
  * 5.5" handheld to a wall tablet, in either orientation. Text ignores the system font scale on purpose:
  * a kiosk must not break its layout because someone changed an accessibility setting on the device.
  */
-class Scale(shortSide: Dp, private val density: Density) {
+class Scale(
+    shortSide: Dp,
+    private val density: Density,
+    /** A theme's text scale: every text size is multiplied by it. 1 is the app's own. */
+    private val textScale: Float = 1f,
+    /** A theme's corner radius, in these units. Null keeps each element's own corners. */
+    private val cornerUnits: Float? = null,
+) {
     private val unit = shortSide / 100
     fun dp(units: Float): Dp = unit * units
-    fun sp(units: Float): TextUnit = with(density) { (unit * units).toSp() }
+    fun sp(units: Float): TextUnit = with(density) { (unit * units * textScale).toSp() }
+
+    /** A corner radius: the theme's when it has one, else [defaultUnits]. */
+    fun corner(defaultUnits: Float): Dp = dp(cornerUnits ?: defaultUnits)
 }
 
 private const val MIN_FIT = 0.45f

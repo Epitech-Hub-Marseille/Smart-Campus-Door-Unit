@@ -179,3 +179,10 @@ provisioning QR code was not tested with a real camera feed (the emulator has no
 tested against the console's encoder. A managed configuration (MDM) is a further option. No boot receiver: the app is
 meant to be set as the home app of the terminal.
 
+## Themes
+
+The server can give this unit a visual theme (`theme.set`, part of the desired state): a few JSON tokens, never code. The app reads the colours
+(background, cards, text, secondary text, accent), light or dark mode, a font family from a fixed list (system, sans, serif, mono, condensed), a text
+scale (0.8 to 1.4) and a corner radius. What a theme leaves out keeps the app's own look. Every value is read defensively (`core/.../theme/ThemeResolver.kt`):
+a bad colour, an unknown font or a silly scale falls back instead of drawing something unreadable. The CSS a theme may carry is for the Faculty screens and is
+ignored here. **Emergency alerts and the end-of-alert notice are never themed.** The unit reports `themeId` and `themeVersion` in its state.

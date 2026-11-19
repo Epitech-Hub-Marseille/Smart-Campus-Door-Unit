@@ -37,6 +37,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -53,10 +54,12 @@ import androidx.compose.ui.unit.sp
 import com.smartcampus.door.core.DoorController
 import com.smartcampus.door.core.protocol.Announcement
 import com.smartcampus.door.core.protocol.DisplayConfig
+import com.smartcampus.door.core.protocol.Reservation
 import com.smartcampus.door.core.state.DoorState
 import com.smartcampus.door.core.state.isAsleep
 import com.smartcampus.door.core.state.localTime
 import kotlinx.coroutines.delay
+import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
@@ -84,9 +87,15 @@ fun DoorScreen(controller: DoorController) {
 
     // An emergency overrides night sleep: the panel wakes at full brightness and shows nothing else.
     val emergency = door.emergency
-    DimWhileAsleep(asleep && emergency == null, bright = emergency != null)
+    // The notice after an emergency also wakes the panel: it answers "is it over?" for people who just left.
+    val notice = if (emergency == null) door.visibleEndNotice(now) else null
+    DimWhileAsleep(asleep && emergency == null && notice == null, bright = emergency != null || notice != null)
     if (emergency != null) {
         EmergencyScreen(door.room?.code, emergency)
+        return
+    }
+    if (notice != null) {
+        EndNoticeScreen(door.room?.code, notice.message)
         return
     }
     if (asleep) {
@@ -187,10 +196,33 @@ private fun RoomBlock(door: DoorState, now: Long, palette: Palette, accent: Colo
             }
         }
         StatusBand(door, accent, palette, s, compact)
+        val next = door.nextReservation(now).takeIf { show.nextReservation }
+        if (next != null) NextReservation(next, now + door.clockOffsetMs, palette, s)
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.Bottom) {
             Text(if (show.capacity && room?.capacity != null) "${room.capacity} seats" else "", color = palette.muted, fontSize = s.sp(5.2f), lineHeight = s.sp(6.5f))
             if (show.clock) Text(door.localTime(now, zone).format(clockFormat), color = palette.text, fontSize = s.sp(9f), lineHeight = s.sp(11f), fontWeight = FontWeight.Medium)
         }
+    }
+}
+
+private val reservationTime: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm").withZone(zone)
+
+/** "Now" while a booking is on, "Next" before it starts. Times are shown in the room's own zone. */
+@Composable
+private fun NextReservation(reservation: Reservation, serverNow: Long, palette: Palette, s: Scale) {
+    val on = reservation.start <= serverNow
+    val slot = "${reservationTime.format(Instant.ofEpochMilli(reservation.start))} – ${reservationTime.format(Instant.ofEpochMilli(reservation.end))}"
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(s.dp(2.5f)), verticalAlignment = Alignment.CenterVertically) {
+        Icon(Icons.Filled.CalendarMonth, contentDescription = null, tint = palette.muted, modifier = Modifier.size(s.dp(5f)))
+        FitText(
+            "${if (on) "Now" else "Next"}: ${reservation.title}, $slot",
+            palette.muted,
+            s.sp(5f),
+            FontWeight.Normal,
+            Modifier.weight(1f),
+            maxLines = 2,
+            align = TextAlign.Start,
+        )
     }
 }
 

@@ -10,6 +10,7 @@ import com.smartcampus.door.core.protocol.ReservationList
 import com.smartcampus.door.core.protocol.RoomInfo
 import com.smartcampus.door.core.protocol.RoomStatus
 import com.smartcampus.door.core.protocol.ServerMessage
+import com.smartcampus.door.core.protocol.Theme
 import com.smartcampus.door.core.protocol.protocolJson
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObject
@@ -41,6 +42,8 @@ data class DoorState(
     val announcements: Map<String, Announcement> = emptyMap(),
     val config: DisplayConfig = DisplayConfig(),
     val audio: AudioSettings = AudioSettings(),
+    /** The visual theme the server chose for this unit; null is the app's own look. Never applied to an emergency. */
+    val theme: Theme? = null,
     /** Shown over everything else, with an alarm, until the server clears it. Persisted so a restart keeps it. */
     val emergency: Emergency? = null,
     /** Set while the server collects cards presented to this reader. Persisted so a restart keeps the mode until it expires. */
@@ -86,6 +89,8 @@ data class DoorState(
             status = field("roomStatus") { protocolJson.decodeFromJsonElement<RoomStatus>(it) } ?: status,
             config = field("displayConfig") { protocolJson.decodeFromJsonElement<DisplayConfig>(it) } ?: config,
             audio = field("audioSettings") { protocolJson.decodeFromJsonElement<AudioSettings>(it) } ?: audio,
+            // Complete state, like the emergency: no theme in it means the theme was taken away, even if the command was missed.
+            theme = desired["theme"]?.takeIf { it is JsonObject }?.let { runCatching { protocolJson.decodeFromJsonElement<Theme>(it) }.getOrNull() },
             // The desired state is complete: no `emergency` (or null) means the alert is over, even if we missed the clear.
             emergency = desired["emergency"]?.takeIf { it is JsonObject }?.let { protocolJson.decodeFromJsonElement<Emergency>(it) },
             reservations = field("reservations") { protocolJson.decodeFromJsonElement<ReservationList>(it) } ?: reservations,
@@ -111,6 +116,7 @@ data class DoorState(
             is ServerMessage.RoomInfoSet -> copy(room = message.value)
             is ServerMessage.DisplayConfigSet -> copy(config = message.config)
             is ServerMessage.AudioSettingsSet -> copy(audio = message.value)
+            is ServerMessage.ThemeSet -> copy(theme = message.theme)
             is ServerMessage.AnnounceShow -> copy(announcements = announcements + (message.value.announcementId to message.value))
             is ServerMessage.AnnounceClear -> copy(announcements = announcements - message.announcementId)
             is ServerMessage.EmergencySet -> copy(emergency = message.value, endNotice = null)

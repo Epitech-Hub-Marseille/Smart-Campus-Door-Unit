@@ -280,6 +280,7 @@ class DoorController(
             state.emergency?.let { put("emergency", it.emergencyId) }
             put("screen", if (state.isAsleep(now, zone)) "sleep" else "on")
             put("volume", state.audio.volume)
+            state.theme?.let { put("themeId", it.id); put("themeVersion", it.version) }
             offlineSince?.let { put("offlineSince", it) }
         }
         session?.send("state.report", statePayload(payload))

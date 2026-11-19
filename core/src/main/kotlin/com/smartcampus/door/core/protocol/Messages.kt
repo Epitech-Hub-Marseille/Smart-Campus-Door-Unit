@@ -48,6 +48,42 @@ data class DisplayConfig(
     val sleep: TimeWindow = TimeWindow(),
 )
 
+/** The colours a theme may set, as "#rrggbb". Whatever it leaves out keeps the app's own. */
+@Serializable
+data class ThemeColors(
+    val background: String? = null,
+    val surface: String? = null,
+    val text: String? = null,
+    val muted: String? = null,
+    val primary: String? = null,
+    val primaryText: String? = null,
+    val border: String? = null,
+    val success: String? = null,
+    val warning: String? = null,
+    val danger: String? = null,
+)
+
+@Serializable
+data class ThemeTypography(val fontFamily: String? = null, val scale: Double? = null)
+
+@Serializable
+data class ThemeShape(val radius: Int? = null)
+
+@Serializable
+data class ThemeTokens(
+    val mode: String? = null,
+    val colors: ThemeColors = ThemeColors(),
+    val typography: ThemeTypography = ThemeTypography(),
+    val shape: ThemeShape = ThemeShape(),
+)
+
+/**
+ * A visual theme (see `packages/protocol/src/theme.ts` on the server). The CSS the server may send to Faculty screens
+ * is not read here: a door unit is not a web page.
+ */
+@Serializable
+data class Theme(val id: String, val name: String, val version: Int, val tokens: ThemeTokens = ThemeTokens())
+
 @Serializable
 data class AudioSettings(val volume: Int = 80, val quietHours: TimeWindow = TimeWindow())
 
@@ -161,6 +197,8 @@ sealed interface ServerMessage {
     data class RoomInfoSet(override val id: String, val value: RoomInfo) : ServerMessage
     data class DisplayConfigSet(override val id: String, val config: DisplayConfig) : ServerMessage
     data class AudioSettingsSet(override val id: String, val value: AudioSettings) : ServerMessage
+    /** [theme] is null to go back to the app's own look. */
+    data class ThemeSet(override val id: String, val theme: Theme?) : ServerMessage
     data class AnnounceShow(override val id: String, val value: Announcement) : ServerMessage
     data class AnnounceClear(override val id: String, val announcementId: String) : ServerMessage
     data class AudioPlayRequest(override val id: String, val value: AudioPlay) : ServerMessage
@@ -227,6 +265,7 @@ private fun decode(id: String, type: String, payload: JsonObject): ServerMessage
         "room.info.set" -> ServerMessage.RoomInfoSet(id, payload.decode())
         "display.config.set" -> ServerMessage.DisplayConfigSet(id, payload["config"]!!.jsonObject.decode())
         "audio.settings.set" -> ServerMessage.AudioSettingsSet(id, payload.decode())
+        "theme.set" -> ServerMessage.ThemeSet(id, payload["theme"]?.takeIf { it is JsonObject }?.jsonObject?.decode())
         "announce.show" -> ServerMessage.AnnounceShow(id, payload.decode())
         "announce.clear" -> ServerMessage.AnnounceClear(id, payload["announcementId"]!!.jsonPrimitive.content)
         "audio.play" -> ServerMessage.AudioPlayRequest(id, payload.decode())

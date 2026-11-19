@@ -12,6 +12,8 @@ import com.smartcampus.door.core.net.MessageSink
 import com.smartcampus.door.core.protocol.CardOutcome
 import com.smartcampus.door.core.protocol.CardMenu
 import com.smartcampus.door.core.protocol.Emergency
+import com.smartcampus.door.core.protocol.Theme
+import com.smartcampus.door.core.protocol.ThemeFont
 import com.smartcampus.door.core.protocol.ServerMessage
 import com.smartcampus.door.core.protocol.ackPayload
 import com.smartcampus.door.core.protocol.badgePayload
@@ -24,10 +26,12 @@ import com.smartcampus.door.core.state.contains
 import com.smartcampus.door.core.state.isAsleep
 import com.smartcampus.door.core.state.localTime
 import com.smartcampus.door.core.storage.FileStorage
+import java.io.File
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.serialization.builtins.ListSerializer
@@ -110,14 +114,21 @@ class DoorController(
     private val pendingTaps = LinkedHashMap<String, Long>()
     private val pendingActions = LinkedHashMap<String, String>()
     private var lastTap: Pair<String, Long>? = null
+    private val _fonts = MutableStateFlow<Map<String, File>>(emptyMap())
+    private var fontsRequested: Map<String, ThemeFont> = emptyMap()
 
     init {
         // A restart in the middle of an emergency must not silence it: it ends only when the server says so.
         _door.value.emergency?.let(::soundAlarm)
+        // After a restart the files are already on disk, so the theme's fonts come back without a network.
+        loadFonts(_door.value.theme)
     }
 
     val door: StateFlow<DoorState> = _door.asStateFlow()
     val online: StateFlow<Boolean> = _online.asStateFlow()
+
+    /** Verified font files of the current theme, by slot. A slot appears once its file is downloaded and its hash matched. */
+    val fonts: StateFlow<Map<String, File>> = _fonts.asStateFlow()
 
     /** Non-null while the maintenance menu is open. */
     val maintenance: StateFlow<MaintenanceSession?> = _maintenance.asStateFlow()
@@ -269,6 +280,34 @@ class DoorController(
         scope.launch { runCatching { player.play(file, volume) } }
     }
 
+    /**
+     * Fetches the font files a theme names. The theme dresses the screen at once and each font joins when its file is
+     * verified, so a slow download never delays the colours. A font that cannot be fetched or is too big is left out,
+     * and the slot keeps the font family of the tokens: a theme must never stop a door from showing its room.
+     */
+    private fun loadFonts(theme: Theme?) {
+        val wanted = theme?.fonts.orEmpty().filter { (slot, font) -> slot in FONT_SLOTS && font.size in 1L..MAX_FONT_BYTES && canLoad(font) }
+        if (wanted == fontsRequested) return
+        fontsRequested = wanted
+        _fonts.value = emptyMap()
+        for ((slot, font) in wanted) {
+            scope.launch {
+                val file = try {
+                    assets.fetch(font.assetId, font.sha256, font.size)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    return@launch
+                }
+                // The theme may have changed while the file was coming.
+                if (fontsRequested[slot] == font) _fonts.update { it + (slot to file) }
+            }
+        }
+    }
+
+    /** Android reads TrueType and OpenType, but not WOFF or WOFF2 (those are for web pages): such a font is not downloaded. */
+    private fun canLoad(font: ThemeFont) = !font.mime.startsWith("font/woff")
+
     /** Sends the state the console draws its live preview from. */
     suspend fun report() {
         val now = clock()
@@ -294,6 +333,7 @@ class DoorController(
         val pruned = state.withoutExpired(clock())
         val before = _door.value.emergency
         _door.value = pruned
+        loadFonts(pruned.theme)
         if (before != pruned.emergency) {
             val current = pruned.emergency
             if (current != null) {
@@ -334,3 +374,8 @@ class DoorController(
         const val SEEN_KEY = "seen-ids.json"
     }
 }
+
+private val FONT_SLOTS = setOf("body", "heading", "mono")
+
+/** The server refuses fonts above this size; a larger one announced to a unit is not a font of ours. */
+private const val MAX_FONT_BYTES = 2L * 1024 * 1024

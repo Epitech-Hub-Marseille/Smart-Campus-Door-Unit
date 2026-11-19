@@ -186,3 +186,8 @@ The server can give this unit a visual theme (`theme.set`, part of the desired s
 scale (0.8 to 1.4) and a corner radius. What a theme leaves out keeps the app's own look. Every value is read defensively (`core/.../theme/ThemeResolver.kt`):
 a bad colour, an unknown font or a silly scale falls back instead of drawing something unreadable. The CSS a theme may carry is for the Faculty screens and is
 ignored here. **Emergency alerts and the end-of-alert notice are never themed.** The unit reports `themeId` and `themeVersion` in its state.
+
+A theme may also name font files for three slots: `body` (all text), `heading` (room name and status) and `mono` (room code and clock). The controller
+downloads each one like a sound (signed request, SHA-256 checked, cached by asset id, so after a restart they load without a network) and the
+screen uses it once verified. Android reads TrueType and OpenType only: a WOFF or WOFF2 font is not downloaded, and a slot without a usable file keeps
+the font family of the tokens.

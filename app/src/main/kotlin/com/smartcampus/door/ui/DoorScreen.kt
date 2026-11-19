@@ -48,6 +48,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -65,6 +66,7 @@ import com.smartcampus.door.core.theme.resolve
 import com.smartcampus.door.core.state.isAsleep
 import com.smartcampus.door.core.state.localTime
 import kotlinx.coroutines.delay
+import java.io.File
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -109,7 +111,8 @@ fun DoorScreen(controller: DoorController) {
         Box(Modifier.fillMaxSize().background(Color.Black))
         return
     }
-    DoorContent(door, online, now)
+    val fontFiles by controller.fonts.collectAsState()
+    DoorContent(door, online, now, remember(fontFiles) { themeFonts(fontFiles) })
 }
 
 /** There is no API to switch the panel off without device admin rights, so the brightness goes to the minimum. */
@@ -162,15 +165,24 @@ private fun fontFamilyFor(name: String?): FontFamily? = when (name) {
     else -> null
 }
 
+/** The typefaces made from a theme's font files. A slot without a usable file is null, and the screen keeps its own. */
+private data class ThemeFonts(val body: FontFamily? = null, val heading: FontFamily? = null, val mono: FontFamily? = null)
+
+private fun themeFonts(files: Map<String, File>): ThemeFonts {
+    // The file was verified by its hash; a file that Android still cannot parse must not crash the door screen.
+    fun family(slot: String) = files[slot]?.let { runCatching { FontFamily(Font(it)) }.getOrNull() }
+    return ThemeFonts(body = family("body"), heading = family("heading"), mono = family("mono"))
+}
+
 @Composable
-private fun DoorContent(door: DoorState, online: Boolean, now: Long) {
+private fun DoorContent(door: DoorState, online: Boolean, now: Long, fonts: ThemeFonts) {
     // The theme only dresses the everyday screen. The emergency and end-of-alert screens never come through here.
     val theme = remember(door.theme) { door.theme.resolve() }
     val palette = paletteFor(door.config, theme)
     val accent = theme.primary?.let(::Color) ?: parseColor(door.config.accentColor)
     val announcements = if (door.config.show.announcements) door.visibleAnnouncements(now) else emptyList()
 
-    ProvideTextStyle(TextStyle(fontFamily = fontFamilyFor(theme.fontFamily))) {
+    ProvideTextStyle(TextStyle(fontFamily = fonts.body ?: fontFamilyFor(theme.fontFamily))) {
     BoxWithConstraints(Modifier.fillMaxSize().background(palette.background)) {
         val landscape = maxWidth > maxHeight
         val s = Scale(minOf(maxWidth, maxHeight), LocalDensity.current, theme.textScale, theme.radiusUnits)
@@ -180,15 +192,15 @@ private fun DoorContent(door: DoorState, online: Boolean, now: Long) {
             val gap = s.dp(5f)
             when {
                 door.config.layout == "split" && landscape -> Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(gap)) {
-                    RoomBlock(door, now, palette, accent, s, compact = false, modifier = Modifier.weight(1f).fillMaxHeight())
+                    RoomBlock(door, now, palette, accent, s, fonts, compact = false, modifier = Modifier.weight(1f).fillMaxHeight())
                     AnnouncementPanel(announcements, palette, accent, s, Modifier.weight(1f).fillMaxHeight())
                 }
                 door.config.layout == "split" -> Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(gap)) {
-                    RoomBlock(door, now, palette, accent, s, compact = false, modifier = Modifier.weight(1f).fillMaxWidth())
+                    RoomBlock(door, now, palette, accent, s, fonts, compact = false, modifier = Modifier.weight(1f).fillMaxWidth())
                     AnnouncementPanel(announcements, palette, accent, s, Modifier.weight(1f).fillMaxWidth())
                 }
                 else -> Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(gap)) {
-                    RoomBlock(door, now, palette, accent, s, compact = door.config.layout == "compact", modifier = Modifier.weight(1f).fillMaxWidth())
+                    RoomBlock(door, now, palette, accent, s, fonts, compact = door.config.layout == "compact", modifier = Modifier.weight(1f).fillMaxWidth())
                     announcements.firstOrNull()?.let { AnnouncementBanner(it, palette, accent, s) }
                 }
             }
@@ -208,7 +220,7 @@ private fun AnnouncementPanel(announcements: List<Announcement>, palette: Palett
 }
 
 @Composable
-private fun RoomBlock(door: DoorState, now: Long, palette: Palette, accent: Color, s: Scale, compact: Boolean, modifier: Modifier) {
+private fun RoomBlock(door: DoorState, now: Long, palette: Palette, accent: Color, s: Scale, fonts: ThemeFonts, compact: Boolean, modifier: Modifier) {
     val room = door.room
     val show = door.config.show
     val place = listOfNotNull(
@@ -228,16 +240,17 @@ private fun RoomBlock(door: DoorState, now: Long, palette: Palette, accent: Colo
                     Modifier.fillMaxWidth(),
                     maxLines = 2,
                     align = TextAlign.Start,
+                    fontFamily = fonts.heading,
                 )
-                if (room != null && room.name.isNotBlank()) FitText(room.code, palette.muted, s.sp(5.2f), FontWeight.Normal, Modifier.fillMaxWidth(), singleLine = true, align = TextAlign.Start)
+                if (room != null && room.name.isNotBlank()) FitText(room.code, palette.muted, s.sp(5.2f), FontWeight.Normal, Modifier.fillMaxWidth(), singleLine = true, align = TextAlign.Start, fontFamily = fonts.mono)
             }
         }
-        StatusBand(door, accent, palette, s, compact)
+        StatusBand(door, accent, palette, s, compact, fonts.heading)
         val next = door.nextReservation(now).takeIf { show.nextReservation }
         if (next != null) NextReservation(next, now + door.clockOffsetMs, palette, s)
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.Bottom) {
             Text(if (show.capacity && room?.capacity != null) "${room.capacity} seats" else "", color = palette.muted, fontSize = s.sp(5.2f), lineHeight = s.sp(6.5f))
-            if (show.clock) Text(door.localTime(now, zone).format(clockFormat), color = palette.text, fontSize = s.sp(9f), lineHeight = s.sp(11f), fontWeight = FontWeight.Medium)
+            if (show.clock) Text(door.localTime(now, zone).format(clockFormat), color = palette.text, fontSize = s.sp(9f), lineHeight = s.sp(11f), fontWeight = FontWeight.Medium, fontFamily = fonts.mono)
         }
     }
 }
@@ -264,7 +277,7 @@ private fun NextReservation(reservation: Reservation, serverNow: Long, palette: 
 }
 
 @Composable
-private fun StatusBand(door: DoorState, accent: Color, palette: Palette, s: Scale, compact: Boolean) {
+private fun StatusBand(door: DoorState, accent: Color, palette: Palette, s: Scale, compact: Boolean, headingFont: FontFamily?) {
     val status = door.status
     val color = status?.let { parseColor(it.color, accent) } ?: palette.muted
     Row(
@@ -274,7 +287,7 @@ private fun StatusBand(door: DoorState, accent: Color, palette: Palette, s: Scal
     ) {
         if (status != null) Icon(iconFor(status.icon), contentDescription = null, tint = color, modifier = Modifier.size(s.dp(if (compact) 8f else 11f)))
         // weight: the label takes what the icon leaves, so a long label shrinks instead of pushing past the band.
-        FitText(status?.label ?: "No status", color, s.sp(if (compact) 8f else 11f), FontWeight.SemiBold, Modifier.weight(1f), maxLines = 2, align = TextAlign.Start)
+        FitText(status?.label ?: "No status", color, s.sp(if (compact) 8f else 11f), FontWeight.SemiBold, Modifier.weight(1f), maxLines = 2, align = TextAlign.Start, fontFamily = headingFont)
     }
 }
 

@@ -82,7 +82,18 @@ data class ThemeTokens(
  * is not read here: a door unit is not a web page.
  */
 @Serializable
-data class Theme(val id: String, val name: String, val version: Int, val tokens: ThemeTokens = ThemeTokens())
+data class Theme(
+    val id: String,
+    val name: String,
+    val version: Int,
+    val tokens: ThemeTokens = ThemeTokens(),
+    /** Font files by slot ("body", "heading", "mono"). Without one for a slot, the app keeps the font family of the tokens. */
+    val fonts: Map<String, ThemeFont> = emptyMap(),
+)
+
+/** A font file the unit downloads like any asset: id, SHA-256 and size, all checked before the file is used. */
+@Serializable
+data class ThemeFont(val assetId: String, val sha256: String, val size: Long, val mime: String = "")
 
 @Serializable
 data class AudioSettings(val volume: Int = 80, val quietHours: TimeWindow = TimeWindow())

@@ -3,6 +3,7 @@ package com.smartcampus.door.core
 import com.smartcampus.door.core.protocol.ServerMessage
 import com.smartcampus.door.core.protocol.Theme
 import com.smartcampus.door.core.protocol.ThemeColors
+import com.smartcampus.door.core.protocol.ThemeFont
 import com.smartcampus.door.core.protocol.ThemeShape
 import com.smartcampus.door.core.protocol.ThemeTokens
 import com.smartcampus.door.core.protocol.ThemeTypography
@@ -46,6 +47,24 @@ class ThemeTest {
         assertEquals(3, set.theme?.version)
         assertEquals("#4f8cff", set.theme?.tokens?.colors?.primary)
         assertNull(set.theme?.tokens?.colors?.background)
+    }
+
+    @Test
+    fun `reads the font files of a theme, and a theme without any has none`() {
+        val sha = "a".repeat(64)
+        val (withFonts, _) = parseServerMessage(
+            frame("""{"theme":{"id":"t1","name":"Brand","version":1,"tokens":{},"fonts":{"heading":{"assetId":"F1","sha256":"$sha","size":1200,"mime":"font/woff2"}}}}"""),
+        )
+        assertEquals(ThemeFont("F1", sha, 1200, "font/woff2"), assertIs<ServerMessage.ThemeSet>(withFonts).theme?.fonts?.get("heading"))
+        val (plain, _) = parseServerMessage(frame("""{"theme":{"id":"t1","name":"Night","version":1,"tokens":{}}}"""))
+        assertEquals(emptyMap(), assertIs<ServerMessage.ThemeSet>(plain).theme?.fonts)
+    }
+
+    @Test
+    fun `fonts survive being saved and read back`() {
+        val branded = night.copy(fonts = mapOf("body" to ThemeFont("F2", "b".repeat(64), 900, "font/woff2")))
+        val state = DoorState(theme = branded)
+        assertEquals(branded, protocolJson.decodeFromString<DoorState>(protocolJson.encodeToString(state)).theme)
     }
 
     @Test

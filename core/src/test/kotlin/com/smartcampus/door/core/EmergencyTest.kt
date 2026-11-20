@@ -159,8 +159,7 @@ class EmergencyTest {
         for ((kind, samples) in loops) {
             val peak = samples.maxOf { abs(it.toInt()) }
             assertTrue(peak in 25_000..Short.MAX_VALUE, "$kind peak $peak")
-            // The echo wraps around the loop, so the edges are not silent; what matters is that the jump from the
-            // last sample back to the first is no bigger than the signal's own steepest step (no audible click).
+            // The jump from the last sample back to the first is no bigger than the signal's own steepest step (no audible click).
             val steepest = samples.toList().zipWithNext { a, b -> abs(b - a) }.max()
             val wrapJump = abs(samples.first() - samples.last())
             assertTrue(wrapJump <= 2 * steepest, "$kind wrap jump $wrapJump vs steepest step $steepest")
@@ -171,7 +170,30 @@ class EmergencyTest {
     }
 
     @Test
+    fun the_fire_alarm_is_the_evacuation_rhythm_three_pulses_then_a_long_silence() {
+        val rate = AlarmSynth.SAMPLE_RATE
+        val loop = AlarmSynth.cycle("fire")
+        assertEquals(rate * 4, loop.size)
+        fun peakBetween(from: Double, to: Double) = (from * rate).toInt().until((to * rate).toInt()).maxOf { abs(loop[it].toInt()) }
+        for (start in 0..2) {
+            assertTrue(peakBetween(start + 0.05, start + 0.45) > 20_000, "pulse $start sounds")
+            assertTrue(peakBetween(start + 0.55, start + 0.95) < 300, "gap after pulse $start is silent")
+        }
+        assertTrue(peakBetween(2.6, 3.95) < 300, "then one and a half seconds of silence")
+    }
+
+    @Test
     fun an_unknown_kind_still_sounds_an_alarm() {
         assertTrue(AlarmSynth.cycle("alien-landing").any { it.toInt() != 0 })
+    }
+
+    @Test
+    fun the_alert_always_has_five_lines_the_last_two_depend_on_the_kind_and_on_a_test() {
+        for (kind in listOf("fire", "biohazard", "nuclear", "bomb", "seismic", "power", "alien-landing")) {
+            assertEquals(5, com.smartcampus.door.core.state.emergencySteps(kind, false).size, kind)
+        }
+        assertEquals("Do not re-enter until staff allow it.", com.smartcampus.door.core.state.emergencySteps("fire", false)[3])
+        assertEquals("Wait for staff to give the all clear.", com.smartcampus.door.core.state.emergencySteps("biohazard", false)[3])
+        assertEquals("This is a test. No action is needed.", com.smartcampus.door.core.state.emergencySteps("fire", true)[4])
     }
 }

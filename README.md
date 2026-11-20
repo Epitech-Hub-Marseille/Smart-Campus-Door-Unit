@@ -79,8 +79,9 @@ terminal is linked to (a moved terminal must not show its old room's bookings).
 
 ## Emergency alerts
 
-`emergency.set` replaces the whole screen with the door code, chevrons pointing at the emblem of the emergency,
-a title and the procedure. `emergency.clear` restores the door screen. Decisions:
+`emergency.set` replaces the whole screen with a terminal-style bulletin, the same as on the Faculty screens: the system's name and the door code, the
+alert in large yellow on the dark colour of its kind, what is happening, the order to follow (`EVACUATE NOW`, `STAY INSIDE`...), three numbered steps
+and hazard stripes (two columns on a wide screen). `emergency.clear` restores the door screen. Decisions:
 
 - **The alarm is synthesised on the device** (`AlarmSynth`), one loop per kind, played on the alarm stream through
   `AudioTrack`. No file to download, so it works offline and starts at once. The alarm stream is pushed to its
@@ -185,7 +186,9 @@ The server can give this unit a visual theme (`theme.set`, part of the desired s
 (background, cards, text, secondary text, accent), light or dark mode, a font family from a fixed list (system, sans, serif, mono, condensed), a text
 scale (0.8 to 1.4) and a corner radius. What a theme leaves out keeps the app's own look. Every value is read defensively (`core/.../theme/ThemeResolver.kt`):
 a bad colour, an unknown font or a silly scale falls back instead of drawing something unreadable. The CSS a theme may carry is for the Faculty screens and is
-ignored here. **Emergency alerts and the end-of-alert notice are never themed.** The unit reports `themeId` and `themeVersion` in its state.
+ignored here. **Emergency alerts keep their colour, wording, alarm and white text.** A theme can only dress them through its `emergency` section (read by `resolveEmergency`):
+the alert's background (only if white text stays readable on it, a contrast of at least 4.5:1), the theme's fonts, a plain yellow band instead of the hazard stripes,
+and the corners of the boxes. Anything unreadable gives the default alert. The unit reports `themeId` and `themeVersion` in its state.
 
 A theme may also name font files for three slots: `body` (all text), `heading` (room name and status) and `mono` (room code and clock). The controller
 downloads each one like a sound (signed request, SHA-256 checked, cached by asset id, so after a restart they load without a network) and the

@@ -4,6 +4,7 @@ import android.app.Activity
 import android.graphics.Typeface
 import android.view.WindowManager
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -44,6 +45,8 @@ import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
@@ -62,6 +65,7 @@ import com.smartcampus.door.core.protocol.DisplayConfig
 import com.smartcampus.door.core.protocol.Reservation
 import com.smartcampus.door.core.state.DoorState
 import com.smartcampus.door.core.theme.ResolvedTheme
+import com.smartcampus.door.core.theme.resolveEmergency
 import com.smartcampus.door.core.theme.resolve
 import com.smartcampus.door.core.state.isAsleep
 import com.smartcampus.door.core.state.localTime
@@ -98,12 +102,16 @@ fun DoorScreen(controller: DoorController) {
     // The notice after an emergency also wakes the panel: it answers "is it over?" for people who just left.
     val notice = if (emergency == null) door.visibleEndNotice(now) else null
     DimWhileAsleep(asleep && emergency == null && notice == null, bright = emergency != null || notice != null)
+    val fontFiles by controller.fonts.collectAsState()
+    val fonts = remember(fontFiles) { themeFonts(fontFiles) }
+    // What the theme may change on an alert (see resolveEmergency); anything unreadable is the default alert.
+    val look = remember(door.theme) { door.theme.resolveEmergency() }
     if (emergency != null) {
-        EmergencyScreen(door.room?.code, emergency)
+        EmergencyScreen(door.room?.code, emergency, look, fonts)
         return
     }
     if (notice != null) {
-        EndNoticeScreen(door.room?.code, notice.message)
+        EndNoticeScreen(door.room?.code, notice.message, look, fonts)
         return
     }
     if (asleep) {
@@ -111,8 +119,7 @@ fun DoorScreen(controller: DoorController) {
         Box(Modifier.fillMaxSize().background(Color.Black))
         return
     }
-    val fontFiles by controller.fonts.collectAsState()
-    DoorContent(door, online, now, remember(fontFiles) { themeFonts(fontFiles) })
+    DoorContent(door, online, now, fonts)
 }
 
 /** There is no API to switch the panel off without device admin rights, so the brightness goes to the minimum. */
@@ -166,12 +173,26 @@ private fun fontFamilyFor(name: String?): FontFamily? = when (name) {
 }
 
 /** The typefaces made from a theme's font files. A slot without a usable file is null, and the screen keeps its own. */
-private data class ThemeFonts(val body: FontFamily? = null, val heading: FontFamily? = null, val mono: FontFamily? = null)
+internal data class ThemeFonts(val body: FontFamily? = null, val heading: FontFamily? = null, val mono: FontFamily? = null)
 
-private fun themeFonts(files: Map<String, File>): ThemeFonts {
+internal fun themeFonts(files: Map<String, File>): ThemeFonts {
     // The file was verified by its hash; a file that Android still cannot parse must not crash the door screen.
     fun family(slot: String) = files[slot]?.let { runCatching { FontFamily(Font(it)) }.getOrNull() }
     return ThemeFonts(body = family("body"), heading = family("heading"), mono = family("mono"))
+}
+
+/**
+ * With a theme, the room block sits on a card the way the Faculty screens draw theirs: the theme's card colour, a hairline in
+ * its border colour, an accent bar on top and its corners. Without a theme the screen keeps its own look.
+ */
+private fun Modifier.themedCard(theme: ResolvedTheme, palette: Palette, accent: Color, s: Scale): Modifier {
+    val shape = RoundedCornerShape(s.corner(2f))
+    val hairline = theme.border?.let(::Color) ?: palette.muted.copy(alpha = 0.3f)
+    return clip(shape)
+        .background(palette.surface)
+        .border(s.dp(0.2f), hairline, shape)
+        .drawBehind { drawRect(accent, size = Size(size.width, s.dp(1f).toPx())) }
+        .padding(s.dp(4f))
 }
 
 @Composable
@@ -186,21 +207,23 @@ private fun DoorContent(door: DoorState, online: Boolean, now: Long, fonts: Them
     BoxWithConstraints(Modifier.fillMaxSize().background(palette.background)) {
         val landscape = maxWidth > maxHeight
         val s = Scale(minOf(maxWidth, maxHeight), LocalDensity.current, theme.textScale, theme.radiusUnits)
+        val themed = door.theme != null
+        val dress: (Modifier) -> Modifier = { if (themed) it.themedCard(theme, palette, accent, s) else it }
         Box(Modifier.fillMaxSize().padding(s.dp(6f))) {
             // Symptom: in portrait the split layout gave each column half of a narrow screen and the status label
             // broke in the middle of a word. Fix: side by side only on a landscape screen, stacked otherwise.
             val gap = s.dp(5f)
             when {
                 door.config.layout == "split" && landscape -> Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(gap)) {
-                    RoomBlock(door, now, palette, accent, s, fonts, compact = false, modifier = Modifier.weight(1f).fillMaxHeight())
+                    RoomBlock(door, now, palette, accent, s, fonts, compact = false, modifier = dress(Modifier.weight(1f).fillMaxHeight()))
                     AnnouncementPanel(announcements, palette, accent, s, Modifier.weight(1f).fillMaxHeight())
                 }
                 door.config.layout == "split" -> Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(gap)) {
-                    RoomBlock(door, now, palette, accent, s, fonts, compact = false, modifier = Modifier.weight(1f).fillMaxWidth())
+                    RoomBlock(door, now, palette, accent, s, fonts, compact = false, modifier = dress(Modifier.weight(1f).fillMaxWidth()))
                     AnnouncementPanel(announcements, palette, accent, s, Modifier.weight(1f).fillMaxWidth())
                 }
                 else -> Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(gap)) {
-                    RoomBlock(door, now, palette, accent, s, fonts, compact = door.config.layout == "compact", modifier = Modifier.weight(1f).fillMaxWidth())
+                    RoomBlock(door, now, palette, accent, s, fonts, compact = door.config.layout == "compact", modifier = dress(Modifier.weight(1f).fillMaxWidth()))
                     announcements.firstOrNull()?.let { AnnouncementBanner(it, palette, accent, s) }
                 }
             }

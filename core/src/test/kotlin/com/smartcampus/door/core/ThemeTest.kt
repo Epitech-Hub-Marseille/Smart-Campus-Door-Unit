@@ -10,11 +10,16 @@ import com.smartcampus.door.core.protocol.ThemeTypography
 import com.smartcampus.door.core.protocol.parseServerMessage
 import com.smartcampus.door.core.protocol.protocolJson
 import com.smartcampus.door.core.state.DoorState
+import com.smartcampus.door.core.theme.ResolvedEmergencyTheme
 import com.smartcampus.door.core.theme.ResolvedTheme
+import com.smartcampus.door.core.theme.contrastOnWhite
+import com.smartcampus.door.core.theme.resolveEmergency
 import com.smartcampus.door.core.theme.parseHexColor
 import com.smartcampus.door.core.theme.resolve
 import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
 import kotlin.test.Test
@@ -144,5 +149,46 @@ class ThemeTest {
         assertEquals(0xFF00A86BL, parseHexColor("#00a86b"))
         assertEquals(0xFFFFFFFFL, parseHexColor("#FFFFFF"))
         for (bad in listOf(null, "", "#fff", "00a86b", "#00a86bff", "rgb(0,0,0)")) assertNull(parseHexColor(bad), bad)
+    }
+
+    private fun alert(json: String) = night.copy(emergency = Json.parseToJsonElement(json).jsonObject)
+
+    @Test
+    fun `reads how a theme dresses an alert`() {
+        val look = alert("""{"fonts":true,"frame":"bar","radius":8,"colors":{"background":"#001070","card":"#0a1a8a"}}""").resolveEmergency()
+        assertEquals(0xFF001070L, look.background)
+        assertEquals(true, look.useFonts)
+        assertEquals(true, look.frameBar)
+        assertEquals(8 / 10.8f, look.radiusUnits)
+    }
+
+    @Test
+    fun `a theme with nothing for alerts gives the default alert`() {
+        assertEquals(ResolvedEmergencyTheme.NONE, night.resolveEmergency())
+        assertEquals(ResolvedEmergencyTheme.NONE, (null as Theme?).resolveEmergency())
+    }
+
+    @Test
+    fun `a background white text cannot be read on, and anything unreadable, fall back to the default`() {
+        assertNull(alert("""{"colors":{"background":"#ffffff"}}""").resolveEmergency().background)
+        assertNull(alert("""{"colors":{"background":"blue"}}""").resolveEmergency().background)
+        assertEquals(ResolvedEmergencyTheme.NONE, alert("""{"fonts":"yes","colors":7,"radius":"big"}""").resolveEmergency())
+        assertNull(alert("""{"radius":99}""").resolveEmergency().radiusUnits)
+    }
+
+    @Test
+    fun `measures contrast like WCAG`() {
+        assertEquals(21.0, contrastOnWhite(0xFF000000L), 0.1)
+        assertEquals(1.0, contrastOnWhite(0xFFFFFFFFL), 0.01)
+    }
+
+    @Test
+    fun `a theme with a bad alert part still keeps the rest of the theme when it is read from the wire`() {
+        val (message, _) = parseServerMessage(
+            frame("""{"theme":{"id":"t1","name":"Brand","version":1,"tokens":{"mode":"light"},"emergency":{"fonts":"yes","colors":7}}}"""),
+        )
+        val theme = assertIs<ServerMessage.ThemeSet>(message).theme
+        assertEquals("t1", theme?.id)
+        assertEquals(ResolvedEmergencyTheme.NONE, theme.resolveEmergency())
     }
 }

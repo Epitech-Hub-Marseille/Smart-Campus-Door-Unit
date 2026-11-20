@@ -42,7 +42,7 @@ data class DoorState(
     val announcements: Map<String, Announcement> = emptyMap(),
     val config: DisplayConfig = DisplayConfig(),
     val audio: AudioSettings = AudioSettings(),
-    /** The visual theme the server chose for this unit; null is the app's own look. Never applied to an emergency. */
+    /** The visual theme the server chose for this unit; null is the app's own look. An emergency only takes the few points of `resolveEmergency` from it. */
     val theme: Theme? = null,
     /** Shown over everything else, with an alarm, until the server clears it. Persisted so a restart keeps it. */
     val emergency: Emergency? = null,

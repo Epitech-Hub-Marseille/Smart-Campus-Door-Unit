@@ -135,6 +135,25 @@ class EmergencyTest {
     }
 
     @Test
+    fun the_alarm_also_steps_back_for_the_read_out_of_a_test_emergency() = runTest {
+        val alarm = RecordingAlarm()
+        val assets = object : AssetSource {
+            override suspend fun fetch(assetId: String, sha256: String, size: Long): File = File.createTempFile("voice", ".wav")
+        }
+        val player = object : AudioPlayer {
+            override suspend fun play(file: File, volumePercent: Int) {
+                alarm.events += "speak $volumePercent"
+            }
+        }
+        val controller = DoorController(FileStorage(Files.createTempDirectory("duck-test").toFile()), assets, player, this, alarm, ZoneOffset.UTC) { noon }
+        controller.receive(ServerMessage.EmergencySet("C1", emergency(test = true, volume = 40)))
+        // A test read-out is not urgent, but it names its emergency.
+        controller.receive(ServerMessage.AudioPlayRequest("A1", AudioPlay("n1", "Test", "asset1", "0".repeat(64), 10, emergencyId = "E1")))
+        testScheduler.advanceUntilIdle()
+        assertEquals(listOf("start fire 0.40", "duck", "speak 80", "unduck"), alarm.events)
+    }
+
+    @Test
     fun a_power_cut_is_a_soft_alarm() {
         assertEquals(0.35f, alarmLevel(emergency(kind = "power"), inQuietHours = false))
         assertEquals(1f, alarmLevel(emergency(kind = "nuclear"), inQuietHours = false))

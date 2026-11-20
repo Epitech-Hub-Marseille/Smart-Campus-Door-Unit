@@ -8,6 +8,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -56,6 +57,7 @@ fun FitText(
     maxLines: Int = Int.MAX_VALUE,
     align: TextAlign = TextAlign.Center,
     letterSpacing: TextUnit = TextUnit.Unspecified,
+    fontFamily: FontFamily? = null,
 ) {
     var scale by remember(text, size) { mutableFloatStateOf(1f) }
     Text(
@@ -64,6 +66,7 @@ fun FitText(
         fontSize = size * scale,
         lineHeight = size * scale * 1.25f,
         fontWeight = weight,
+        fontFamily = fontFamily,
         letterSpacing = letterSpacing,
         textAlign = align,
         maxLines = if (singleLine) 1 else maxLines,

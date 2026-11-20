@@ -6,275 +6,133 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.StrokeJoin
-import androidx.compose.ui.graphics.drawscope.DrawScope
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.TextUnit
 import com.smartcampus.door.core.protocol.Emergency
-import kotlin.math.PI
-import kotlin.math.cos
-import kotlin.math.min
-import kotlin.math.pow
-import kotlin.math.sin
+import com.smartcampus.door.core.state.emergencyPresentation
+import com.smartcampus.door.core.state.emergencySteps
+import com.smartcampus.door.core.theme.ResolvedEmergencyTheme
+import kotlinx.coroutines.delay
 
-private val EmergencyBackground = Color(0xFF07080A)
-private val EmergencyText = Color(0xFFF2F5F3)
-private val EmergencyMuted = Color(0xFFA3AFA9)
+/** Each of the five lines is the one to do now for this long, in turn: five lines go round in four seconds. */
+private const val STEP_HIGHLIGHT_MS = 800L
+/** The triangles take turns, and the chevrons blink with the first one: one second a cycle, half of it each. */
+private const val BLINK_HALF_MS = 500L
+/** The hazard stripes slide by one pattern in this time, so they loop without a jump. */
+private const val STRIPES_MS = 2_000
 
-/** Accent per kind. An unknown kind from a newer server gets the fire colour: it is still an alert. */
-private fun accentOf(kind: String) = when (kind) {
-    "biohazard" -> Color(0xFFB4E61D)
-    "nuclear" -> Color(0xFFFFD21F)
-    "bomb" -> Color(0xFFFF2D55)
-    "seismic" -> Color(0xFFFF9F1C)
-    "power" -> Color(0xFF3EA6FF)
-    else -> Color(0xFFFF5A36)
-}
+/** A door unit does not know the site's number; 112 works in every EU country. */
+private const val EMERGENCY_NUMBER = "112"
 
 /**
- * Full screen takeover. It shows the door code, light travelling along chevrons towards the
- * emblem of the emergency, then what it is and what to do. Nothing else, so it reads at a glance.
+ * Full screen takeover, the alert of the Faculty screens at the size of a door: the system's name and this door's code, the alert in
+ * large yellow between two warning triangles that blink in turns, what is happening, the order to follow between two blinking
+ * chevrons, five lines in which the one to do now is reversed in turn, who to call and sliding hazard stripes. Nothing else, so it
+ * reads at a glance. The alarm is separate and never depends on this screen.
+ *
+ * A theme may dress it through [look]: a dark background, its fonts, a plain band instead of stripes and the corners of the
+ * boxes. The colour is the kind of alert's, the text is white and yellow, and anything unreadable is the default alert.
  */
 @Composable
-fun EmergencyScreen(doorCode: String?, emergency: Emergency) {
-    val accent = accentOf(emergency.kind)
-    val transition = rememberInfiniteTransition(label = "emergency")
-    val sweep by transition.animateFloat(0f, 1f, infiniteRepeatable(tween(1600, easing = LinearEasing), RepeatMode.Restart), label = "sweep")
-    val breathe by transition.animateFloat(0f, 1f, infiniteRepeatable(tween(2200), RepeatMode.Reverse), label = "breathe")
+internal fun EmergencyScreen(doorCode: String?, emergency: Emergency, look: ResolvedEmergencyTheme = ResolvedEmergencyTheme.NONE, fonts: ThemeFonts = ThemeFonts()) {
+    val background = look.background?.let(::Color) ?: alertBackground(emergency.kind)
+    val presentation = remember(emergency.kind) { emergencyPresentation(emergency.kind) }
+    val headingFont = (if (look.useFonts) fonts.heading else null) ?: AlertFont
+    val bodyFont = (if (look.useFonts) fonts.body else null) ?: AlertFont
+    val steps = remember(emergency.kind, emergency.testMode) { emergencySteps(emergency.kind, emergency.testMode) }
 
-    BoxWithConstraints(
-        Modifier
-            .fillMaxSize()
-            .background(EmergencyBackground)
-            // A faint wash that breathes with the alarm: it draws the eye without flashing.
-            .background(Brush.radialGradient(listOf(accent.copy(alpha = 0.05f + 0.07f * breathe), Color.Transparent))),
-    ) {
-        // Why one unit from the short side: a fixed sp/dp size is right on one screen and huge on a
-        // smaller one. Everything below is a multiple of this unit (1% of the short side), so the
-        // screen keeps its proportions from a 5.5" Famoco to a wall tablet, in either orientation.
-        val screenHeight = maxHeight
-        val screenWidth = maxWidth
-        val unit = minOf(screenWidth, screenHeight) / 100
-        val density = LocalDensity.current
-        // Sizes ignore the system font scale on purpose: a kiosk screen must not break its layout
-        // because someone changed the accessibility setting on the device.
-        fun size(factor: Float) = with(density) { (unit * factor).toSp() }
+    // The blinks and the highlight are hard steps, as on the Faculty screens: on or off, never a fade.
+    var secondHalf by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(BLINK_HALF_MS)
+            secondHalf = !secondHalf
+        }
+    }
+    var active by remember { mutableIntStateOf(0) }
+    LaunchedEffect(steps.size) {
+        while (true) {
+            delay(STEP_HIGHLIGHT_MS)
+            active = (active + 1) % steps.size
+        }
+    }
+    val slide = rememberInfiniteTransition(label = "stripes").animateFloat(0f, 1f, infiniteRepeatable(tween(STRIPES_MS, easing = LinearEasing), RepeatMode.Restart), label = "slide")
 
-        Column(
-            Modifier.fillMaxSize().padding(horizontal = unit * 7, vertical = unit * 5),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            val codeSpacing = unit * 1.6f
-            FitText(
-                doorCode.orEmpty(),
-                color = EmergencyText,
-                size = size(7.5f),
-                weight = FontWeight.Medium,
-                letterSpacing = size(1.6f),
-                singleLine = true,
-                // Letter spacing is also added after the last character, which would pull a centred text to the left.
-                modifier = Modifier.fillMaxWidth().padding(start = codeSpacing),
-            )
-            val landscape = screenWidth > screenHeight
-            val emblem = @Composable { modifier: Modifier ->
-                BoxWithConstraints(modifier.padding(vertical = unit * 2)) {
-                    Canvas(Modifier.fillMaxSize()) { drawEmblem(emergency.kind, accent, sweep, breathe, horizontal = maxWidth > maxHeight) }
+    BoxWithConstraints(Modifier) {
+        val s = Scale(minOf(maxWidth, maxHeight), LocalDensity.current)
+        val landscape = maxWidth > maxHeight
+        val hero = @Composable {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+                AlertTriangle(s, Modifier.alpha(if (secondHalf) 0f else 1f))
+                FitText(emergency.title.uppercase(), AlertYellow, s.sp(9.5f), FontWeight.Bold, Modifier.padding(horizontal = s.dp(2.5f)).weight(1f, fill = false), singleLine = true, fontFamily = headingFont)
+                AlertTriangle(s, Modifier.alpha(if (secondHalf) 1f else 0f))
+            }
+        }
+        val detail = @Composable {
+            FitText(emergency.instructions.uppercase(), Color.White, s.sp(4.6f), FontWeight.Bold, Modifier.fillMaxWidth(), maxLines = 3, fontFamily = bodyFont)
+        }
+        val callout = @Composable { AlertCallout(presentation.headline, background, s, look.radiusUnits, headingFont, chevronsOn = !secondHalf) }
+        val stepList = @Composable { modifier: Modifier ->
+            Column(modifier, verticalArrangement = Arrangement.spacedBy(s.dp(1.2f))) {
+                steps.forEachIndexed { index, step ->
+                    StepLine(index + 1, step.uppercase(), first = index == active, background = background, s = s, cornerUnits = look.radiusUnits, fontFamily = bodyFont)
                 }
             }
-            val message = @Composable { modifier: Modifier, textHeight: Dp ->
-                Column(modifier, horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(unit * 2.4f)) {
-                    if (emergency.testMode) TestTag(accent, size(3.4f), unit)
-                    FitText(emergency.title, color = accent, size = size(8.4f), weight = FontWeight.SemiBold, singleLine = true, modifier = Modifier.fillMaxWidth())
-                    FitText(
-                        emergency.instructions,
-                        color = EmergencyMuted,
-                        size = size(5.2f),
-                        weight = FontWeight.Normal,
-                        // Capped so the emblem stays the main thing on the screen.
-                        modifier = Modifier.fillMaxWidth().heightIn(max = textHeight),
-                    )
-                }
-            }
+        }
+        AlertFrame(background, s, look.radiusUnits) {
+            AlertHeader(background, if (emergency.testMode) "TEST - NO REAL EMERGENCY" else doorCode?.let { "[$it]" }.orEmpty(), s, look.radiusUnits)
             if (landscape) {
-                // Side by side: stacking them would leave the emblem a thumbnail on a wide, short screen.
-                Row(Modifier.weight(1f).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    emblem(Modifier.weight(1f).fillMaxHeight())
-                    Spacer(Modifier.width(unit * 6))
-                    message(Modifier.weight(1f), screenHeight * 0.7f)
+                // Side by side: stacked, a wide and short screen has no room left for the steps.
+                Row(Modifier.weight(1f).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(s.dp(3f))) {
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(s.dp(2.2f), Alignment.CenterVertically)) {
+                        hero()
+                        detail()
+                        callout()
+                    }
+                    stepList(Modifier.weight(1.1f))
                 }
             } else {
-                emblem(Modifier.weight(1f).fillMaxWidth())
-                message(Modifier, screenHeight * 0.34f)
+                hero()
+                detail()
+                callout()
+                AlertRule(s)
+                stepList(Modifier.weight(1f))
             }
+            AlertBar(EMERGENCY_NUMBER, s, look.radiusUnits, bodyFont)
+            HazardStripes(s, plain = look.frameBar, slide = { slide.value })
         }
     }
 }
 
-/** A test must never be mistaken for the real thing by someone who only glances at the screen. */
+/** ">> 1. USE THE STAIRS. ..." The highlighted step is reversed (white): the one to do now, it cycles through the list. */
 @Composable
-private fun TestTag(accent: Color, size: TextUnit, unit: Dp) {
-    Text(
-        "TEST — NO REAL EMERGENCY",
-        color = EmergencyBackground,
-        fontSize = size,
-        fontWeight = FontWeight.Bold,
-        letterSpacing = size * 0.12f,
-        maxLines = 1,
-        modifier = Modifier.clip(RoundedCornerShape(50)).background(accent).padding(horizontal = unit * 3.4f, vertical = unit * 1.2f),
-    )
-}
-
-/** Chevrons on both sides pointing at the emblem (left/right on a wide screen, above/below on a tall one). */
-private fun DrawScope.drawEmblem(kind: String, accent: Color, sweep: Float, breathe: Float, horizontal: Boolean) {
-    val center = Offset(size.width / 2, size.height / 2)
-    val half = (if (horizontal) size.width else size.height) / 2
-    val ring = min(min(size.width, size.height) * 0.36f, half * 0.34f)
-
-    // Why a travelling wave: the eye follows it towards the emblem, which is the point of the screen.
-    val chevron = ring * 0.42f
-    val spacing = chevron * 1.05f
-    val first = ring * 1.45f
-    val count = ((half - first) / spacing).toInt().coerceIn(1, 5)
-    val position = sweep * count
-    for (i in 0 until count) {
-        val behind = (position - i + count) % count
-        val alpha = 0.12f + 0.88f * (1f - behind / count).pow(2)
-        val distance = first + (count - 1 - i) * spacing // i = 0 is the outermost chevron
-        for (side in intArrayOf(-1, 1)) {
-            val at = if (horizontal) Offset(center.x + side * distance, center.y) else Offset(center.x, center.y + side * distance)
-            // Pointing at the emblem: a chevron on the negative side faces the positive direction.
-            val degrees = if (horizontal) (if (side < 0) 0f else 180f) else (if (side < 0) 90f else 270f)
-            drawChevron(at, chevron, degrees, accent.copy(alpha = alpha))
-        }
-    }
-
-    drawCircle(accent.copy(alpha = 0.10f + 0.10f * breathe), radius = ring * (1.12f + 0.06f * breathe), center = center)
-    drawCircle(accent, radius = ring, center = center, style = Stroke(width = ring * 0.06f))
-    drawGlyph(kind, center, ring * 0.58f, accent)
-}
-
-/** A "›" of height 2·[size] centred on [at], rotated so it points along [degrees] (0 = to the right). */
-private fun DrawScope.drawChevron(at: Offset, size: Float, degrees: Float, color: Color) {
-    val path = Path().apply {
-        moveTo(at.x - size * 0.5f, at.y - size)
-        lineTo(at.x + size * 0.5f, at.y)
-        lineTo(at.x - size * 0.5f, at.y + size)
-    }
-    rotate(degrees, pivot = at) {
-        drawPath(path, color, style = Stroke(width = size * 0.3f, cap = StrokeCap.Round, join = StrokeJoin.Round))
-    }
-}
-
-/** The emblem of each emergency, drawn with paths so it stays sharp at any size. [r] is its radius. */
-private fun DrawScope.drawGlyph(kind: String, c: Offset, r: Float, color: Color) {
-    fun p(x: Float, y: Float) = Offset(c.x + x * r, c.y + y * r)
-    // Paths are described in unit coordinates (-1..1) around the centre.
-    fun Path.move(x: Float, y: Float) = moveTo(p(x, y).x, p(x, y).y)
-    fun Path.line(x: Float, y: Float) = lineTo(p(x, y).x, p(x, y).y)
-    fun Path.curve(x1: Float, y1: Float, x2: Float, y2: Float, x3: Float, y3: Float) =
-        cubicTo(p(x1, y1).x, p(x1, y1).y, p(x2, y2).x, p(x2, y2).y, p(x3, y3).x, p(x3, y3).y)
-    fun polyline(points: List<Pair<Float, Float>>) = Path().apply {
-        move(points[0].first, points[0].second)
-        points.drop(1).forEach { line(it.first, it.second) }
-    }
-    val line = Stroke(width = r * 0.16f, cap = StrokeCap.Round, join = StrokeJoin.Round)
-
-    when (kind) {
-        "biohazard" -> {
-            // Three overlapping rings around a hub, the shape of the biohazard trefoil.
-            for (k in 0 until 3) {
-                val a = (-90.0 + 120.0 * k) * PI / 180
-                drawCircle(color, radius = r * 0.52f, center = p((cos(a) * 0.5).toFloat(), (sin(a) * 0.5).toFloat()), style = Stroke(width = r * 0.14f))
-            }
-            drawCircle(color, radius = r * 0.14f, center = c)
-        }
-        "nuclear" -> {
-            for (k in 0 until 3) {
-                drawArc(color, startAngle = -90f + 120f * k - 30f, sweepAngle = 60f, useCenter = true, topLeft = p(-1f, -1f), size = Size(2 * r, 2 * r))
-            }
-            drawCircle(EmergencyBackground, radius = r * 0.3f, center = c)
-            drawCircle(color, radius = r * 0.17f, center = c)
-        }
-        "bomb" -> {
-            drawCircle(color, radius = r * 0.66f, center = p(-0.12f, 0.24f))
-            drawLine(color, p(0.2f, -0.28f), p(0.5f, -0.6f), strokeWidth = r * 0.16f, cap = StrokeCap.Round)
-            for (degrees in listOf(-20.0, -75.0, -130.0)) {
-                val a = degrees * PI / 180
-                drawLine(color, p(0.62f, -0.72f), p(0.62f + (cos(a) * 0.34).toFloat(), -0.72f + (sin(a) * 0.34).toFloat()), strokeWidth = r * 0.09f, cap = StrokeCap.Round)
-            }
-        }
-        "seismic" -> drawPath(
-            polyline(listOf(-1f to 0f, -0.58f to 0f, -0.38f to -0.72f, -0.14f to 0.82f, 0.12f to -0.92f, 0.36f to 0.5f, 0.55f to 0f, 1f to 0f)),
-            color,
-            style = line,
-        )
-        "power" -> drawPath(
-            polyline(listOf(0.18f to -1f, -0.56f to 0.1f, -0.06f to 0.1f, -0.2f to 1f, 0.56f to -0.16f, 0.06f to -0.16f)).apply { close() },
-            color,
-        )
-        "fire" -> {
-            drawPath(
-                Path().apply {
-                    move(0f, -1f)
-                    curve(0.2f, -0.55f, 0.75f, -0.25f, 0.7f, 0.3f)
-                    curve(0.65f, 0.8f, 0.3f, 1f, 0f, 1f)
-                    curve(-0.3f, 1f, -0.7f, 0.8f, -0.7f, 0.3f)
-                    curve(-0.75f, -0.05f, -0.4f, -0.3f, -0.3f, -0.65f)
-                    curve(-0.2f, -0.85f, -0.05f, -0.9f, 0f, -1f)
-                    close()
-                },
-                color,
-            )
-            // The inner flame is cut out with the background colour, which reads as the heart of the fire.
-            drawPath(
-                Path().apply {
-                    move(0f, 0.05f)
-                    curve(0.3f, 0.35f, 0.35f, 0.9f, 0f, 0.9f)
-                    curve(-0.35f, 0.9f, -0.3f, 0.35f, 0f, 0.05f)
-                    close()
-                },
-                EmergencyBackground,
-            )
-        }
-        else -> {
-            drawPath(polyline(listOf(0f to -1f, 0.95f to 0.85f, -0.95f to 0.85f)).apply { close() }, color, style = line)
-            drawLine(color, p(0f, -0.3f), p(0f, 0.25f), strokeWidth = r * 0.16f, cap = StrokeCap.Round)
-            drawCircle(color, radius = r * 0.09f, center = p(0f, 0.55f))
-        }
+private fun StepLine(number: Int, text: String, first: Boolean, background: Color, s: Scale, cornerUnits: Float?, fontFamily: FontFamily) {
+    val shape = RoundedCornerShape(s.dp(cornerUnits ?: 0f))
+    val line = Modifier.fillMaxWidth().clip(shape).let { if (first) it.background(Color.White) else it }.padding(horizontal = s.dp(1.6f), vertical = s.dp(0.6f))
+    Row(line, horizontalArrangement = Arrangement.spacedBy(s.dp(1.6f))) {
+        FitText(">>", if (first) background else AlertYellow, s.sp(4.2f), FontWeight.Bold, singleLine = true, fontFamily = fontFamily)
+        FitText("$number. $text", if (first) background else Color.White, s.sp(4.2f), FontWeight.Bold, Modifier.weight(1f), maxLines = 3, align = TextAlign.Start, fontFamily = fontFamily)
     }
 }

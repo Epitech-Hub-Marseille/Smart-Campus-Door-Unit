@@ -22,6 +22,12 @@ interface AudioPlayer {
 interface AlarmPlayer {
     fun start(kind: String, level: Float)
     fun stop()
+
+    /**
+     * Steps the alarm back (quieter and muffled) while a voice reads the emergency aloud, and brings it back after, so the words
+     * can be understood over the alarm. Does nothing by default: an alarm that cannot step back simply keeps sounding.
+     */
+    fun duck(on: Boolean) = Unit
 }
 
 object NoAlarm : AlarmPlayer {

@@ -6,6 +6,7 @@ import com.smartcampus.door.core.audio.AssetSource
 import com.smartcampus.door.core.audio.AudioPlayer
 import com.smartcampus.door.core.net.LinkEvent
 import com.smartcampus.door.core.net.MessageSink
+import com.smartcampus.door.core.protocol.AudioPlay
 import com.smartcampus.door.core.protocol.AudioSettings
 import com.smartcampus.door.core.protocol.Emergency
 import com.smartcampus.door.core.protocol.ServerMessage
@@ -34,6 +35,10 @@ private class RecordingAlarm : AlarmPlayer {
     val events = mutableListOf<String>()
     override fun start(kind: String, level: Float) {
         events += "start $kind ${"%.2f".format(level)}"
+    }
+
+    override fun duck(on: Boolean) {
+        events += if (on) "duck" else "unduck"
     }
 
     override fun stop() {
@@ -107,6 +112,29 @@ class EmergencyTest {
     }
 
     @Test
+    fun the_alarm_steps_back_while_an_urgent_read_out_plays_and_comes_back_after() = runTest {
+        val alarm = RecordingAlarm()
+        val assets = object : AssetSource {
+            override suspend fun fetch(assetId: String, sha256: String, size: Long): File = File.createTempFile("voice", ".wav")
+        }
+        val player = object : AudioPlayer {
+            override suspend fun play(file: File, volumePercent: Int) {
+                alarm.events += "speak $volumePercent"
+            }
+        }
+        val controller = DoorController(FileStorage(Files.createTempDirectory("duck-test").toFile()), assets, player, this, alarm, ZoneOffset.UTC) { noon }
+        controller.receive(ServerMessage.EmergencySet("C1", emergency()))
+        controller.receive(ServerMessage.AudioPlayRequest("A1", AudioPlay("n1", "Evacuate", "asset1", "0".repeat(64), 10, urgent = true)))
+        testScheduler.advanceUntilIdle()
+        assertEquals(listOf("start fire 1.00", "duck", "speak 100", "unduck"), alarm.events)
+
+        // An ordinary announcement does not touch the alarm.
+        controller.receive(ServerMessage.AudioPlayRequest("A2", AudioPlay("n2", "Bell", "asset2", "0".repeat(64), 10)))
+        testScheduler.advanceUntilIdle()
+        assertEquals(listOf("start fire 1.00", "duck", "speak 100", "unduck", "speak 80"), alarm.events)
+    }
+
+    @Test
     fun a_power_cut_is_a_soft_alarm() {
         assertEquals(0.35f, alarmLevel(emergency(kind = "power"), inQuietHours = false))
         assertEquals(1f, alarmLevel(emergency(kind = "nuclear"), inQuietHours = false))
@@ -159,8 +187,7 @@ class EmergencyTest {
         for ((kind, samples) in loops) {
             val peak = samples.maxOf { abs(it.toInt()) }
             assertTrue(peak in 25_000..Short.MAX_VALUE, "$kind peak $peak")
-            // The echo wraps around the loop, so the edges are not silent; what matters is that the jump from the
-            // last sample back to the first is no bigger than the signal's own steepest step (no audible click).
+            // The jump from the last sample back to the first is no bigger than the signal's own steepest step (no audible click).
             val steepest = samples.toList().zipWithNext { a, b -> abs(b - a) }.max()
             val wrapJump = abs(samples.first() - samples.last())
             assertTrue(wrapJump <= 2 * steepest, "$kind wrap jump $wrapJump vs steepest step $steepest")
@@ -171,7 +198,30 @@ class EmergencyTest {
     }
 
     @Test
+    fun the_fire_alarm_is_the_evacuation_rhythm_three_pulses_then_a_long_silence() {
+        val rate = AlarmSynth.SAMPLE_RATE
+        val loop = AlarmSynth.cycle("fire")
+        assertEquals(rate * 4, loop.size)
+        fun peakBetween(from: Double, to: Double) = (from * rate).toInt().until((to * rate).toInt()).maxOf { abs(loop[it].toInt()) }
+        for (start in 0..2) {
+            assertTrue(peakBetween(start + 0.05, start + 0.45) > 20_000, "pulse $start sounds")
+            assertTrue(peakBetween(start + 0.55, start + 0.95) < 300, "gap after pulse $start is silent")
+        }
+        assertTrue(peakBetween(2.6, 3.95) < 300, "then one and a half seconds of silence")
+    }
+
+    @Test
     fun an_unknown_kind_still_sounds_an_alarm() {
         assertTrue(AlarmSynth.cycle("alien-landing").any { it.toInt() != 0 })
+    }
+
+    @Test
+    fun the_alert_always_has_five_lines_the_last_two_depend_on_the_kind_and_on_a_test() {
+        for (kind in listOf("fire", "biohazard", "nuclear", "bomb", "seismic", "power", "alien-landing")) {
+            assertEquals(5, com.smartcampus.door.core.state.emergencySteps(kind, false).size, kind)
+        }
+        assertEquals("Do not re-enter until staff allow it.", com.smartcampus.door.core.state.emergencySteps("fire", false)[3])
+        assertEquals("Wait for staff to give the all clear.", com.smartcampus.door.core.state.emergencySteps("biohazard", false)[3])
+        assertEquals("This is a test. No action is needed.", com.smartcampus.door.core.state.emergencySteps("fire", true)[4])
     }
 }

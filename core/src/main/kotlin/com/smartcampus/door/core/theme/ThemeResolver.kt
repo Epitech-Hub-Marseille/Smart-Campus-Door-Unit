@@ -1,6 +1,11 @@
 package com.smartcampus.door.core.theme
 
 import com.smartcampus.door.core.protocol.Theme
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 
 /** The fonts a theme may name, as the server defines them. The app maps each to a typeface it has. */
 val THEME_FONTS = setOf("system", "sans", "serif", "mono", "condensed")
@@ -66,4 +71,46 @@ fun Theme?.resolve(): ResolvedTheme {
         textScale = (tokens.typography.scale?.toFloat() ?: 1f).coerceIn(MIN_SCALE, MAX_SCALE),
         radiusUnits = tokens.shape.radius?.takeIf { it in 0..MAX_RADIUS }?.let { it * UNITS_PER_REFERENCE_PIXEL },
     )
+}
+
+/** The least contrast white text needs on an alert's background (WCAG, large text). The server refuses a darker rule too. */
+const val EMERGENCY_MIN_CONTRAST = 4.5
+
+/** Contrast of white text on an opaque 0xFFRRGGBB colour, by WCAG's relative luminance. */
+fun contrastOnWhite(argb: Long): Double {
+    fun channel(shift: Int): Double {
+        val value = ((argb shr shift) and 0xFF) / 255.0
+        return if (value <= 0.03928) value / 12.92 else Math.pow((value + 0.055) / 1.055, 2.4)
+    }
+    return 1.05 / (0.2126 * channel(16) + 0.7152 * channel(8) + 0.0722 * channel(0) + 0.05)
+}
+
+/**
+ * What a theme changes on an alert, in the terms the screen draws with. The alert's colour, wording, alarm and white text are
+ * never themed. [background] is null unless white text stays readable on it, so a bad value falls back to the default.
+ */
+data class ResolvedEmergencyTheme(
+    val background: Long? = null,
+    val useFonts: Boolean = false,
+    /** True for a plain solid band in the colour of the alert along the top and bottom; false for the default look. */
+    val frameBar: Boolean = false,
+    val radiusUnits: Float? = null,
+) {
+    companion object {
+        val NONE = ResolvedEmergencyTheme()
+    }
+}
+
+/** Reads the alert part of a theme defensively: anything unreadable gives [ResolvedEmergencyTheme.NONE], the default alert. */
+fun Theme?.resolveEmergency(): ResolvedEmergencyTheme {
+    val raw = this?.emergency ?: return ResolvedEmergencyTheme.NONE
+    return runCatching {
+        val background = parseHexColor(raw["colors"]?.jsonObject?.get("background")?.jsonPrimitive?.contentOrNull)
+        ResolvedEmergencyTheme(
+            background = background?.takeIf { contrastOnWhite(it) >= EMERGENCY_MIN_CONTRAST },
+            useFonts = raw["fonts"]?.jsonPrimitive?.booleanOrNull == true,
+            frameBar = raw["frame"]?.jsonPrimitive?.contentOrNull == "bar",
+            radiusUnits = raw["radius"]?.jsonPrimitive?.intOrNull?.takeIf { it in 0..MAX_RADIUS }?.let { it * UNITS_PER_REFERENCE_PIXEL },
+        )
+    }.getOrDefault(ResolvedEmergencyTheme.NONE)
 }

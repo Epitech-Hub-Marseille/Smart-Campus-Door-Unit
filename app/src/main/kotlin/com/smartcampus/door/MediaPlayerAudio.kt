@@ -17,7 +17,9 @@ class MediaPlayerAudio : AudioPlayer {
             try {
                 player.setAudioAttributes(
                     AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        // An urgent read-out (full volume) goes out on the alarm stream, which the alarm has pushed to its maximum, so a low
+                        // media volume set by an installer cannot make it a whisper.
+                        .setUsage(if (volumePercent >= 100) AudioAttributes.USAGE_ALARM else AudioAttributes.USAGE_MEDIA)
                         .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                         .build(),
                 )

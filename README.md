@@ -83,6 +83,7 @@ terminal is linked to (a moved terminal must not show its old room's bookings).
 alert in large yellow on the dark colour of its kind, what is happening, the order to follow (`EVACUATE NOW`, `STAY INSIDE`...), three numbered steps
 and hazard stripes (two columns on a wide screen). `emergency.clear` restores the door screen. Decisions:
 
+- **A read-out is heard over the alarm.** While an urgent announcement (the spoken alert) plays, the alarm drops to a fifth of its level (`AlarmPlayer.duck`) and comes back when it ends. The read-out plays at full volume on the alarm stream, so a low media volume cannot make it a whisper.
 - **The alarm is synthesised on the device** (`AlarmSynth`), one loop per kind, played on the alarm stream through
   `AudioTrack`. No file to download, so it works offline and starts at once. The alarm stream is pushed to its
   maximum and the level is applied on the track, so a low system volume cannot silence a real alert.

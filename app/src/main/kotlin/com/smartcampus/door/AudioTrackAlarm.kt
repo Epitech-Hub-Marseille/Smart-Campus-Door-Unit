@@ -13,9 +13,13 @@ import com.smartcampus.door.core.audio.AlarmSynth
  * is applied on the track itself, so an installer who left the alarm stream low cannot silence a
  * real emergency and a test can still be quiet.
  */
+private const val DUCKED_LEVEL = 0.2f
+
 class AudioTrackAlarm(context: Context) : AlarmPlayer {
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private var track: AudioTrack? = null
+    private var level = 0f
+    private var ducked = false
 
     @Synchronized
     override fun start(kind: String, level: Float) {
@@ -43,10 +47,20 @@ class AudioTrackAlarm(context: Context) : AlarmPlayer {
             .build()
         created.write(samples, 0, samples.size)
         created.setLoopPoints(0, samples.size, -1)
-        created.setVolume(level.coerceIn(0f, 1f))
+        this.level = level.coerceIn(0f, 1f)
+        created.setVolume(currentVolume())
         created.play()
         track = created
     }
+
+    /** A voice is speaking: the alarm drops to a fifth of its level so the words come through. */
+    @Synchronized
+    override fun duck(on: Boolean) {
+        ducked = on
+        track?.setVolume(currentVolume())
+    }
+
+    private fun currentVolume() = if (ducked) level * DUCKED_LEVEL else level
 
     @Synchronized
     override fun stop() {

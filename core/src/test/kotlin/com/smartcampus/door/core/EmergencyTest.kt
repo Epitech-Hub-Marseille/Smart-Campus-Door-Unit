@@ -6,6 +6,7 @@ import com.smartcampus.door.core.audio.AssetSource
 import com.smartcampus.door.core.audio.AudioPlayer
 import com.smartcampus.door.core.net.LinkEvent
 import com.smartcampus.door.core.net.MessageSink
+import com.smartcampus.door.core.protocol.AudioPlay
 import com.smartcampus.door.core.protocol.AudioSettings
 import com.smartcampus.door.core.protocol.Emergency
 import com.smartcampus.door.core.protocol.ServerMessage
@@ -34,6 +35,10 @@ private class RecordingAlarm : AlarmPlayer {
     val events = mutableListOf<String>()
     override fun start(kind: String, level: Float) {
         events += "start $kind ${"%.2f".format(level)}"
+    }
+
+    override fun duck(on: Boolean) {
+        events += if (on) "duck" else "unduck"
     }
 
     override fun stop() {
@@ -104,6 +109,29 @@ class EmergencyTest {
         atNight.receive(ServerMessage.EmergencySet("C2", emergency(test = true, volume = 15)))
         assertEquals(listOf("stop"), quiet.events) // the screen still shows the test, the speaker stays off
         assertEquals("E1", atNight.door.value.emergency?.emergencyId)
+    }
+
+    @Test
+    fun the_alarm_steps_back_while_an_urgent_read_out_plays_and_comes_back_after() = runTest {
+        val alarm = RecordingAlarm()
+        val assets = object : AssetSource {
+            override suspend fun fetch(assetId: String, sha256: String, size: Long): File = File.createTempFile("voice", ".wav")
+        }
+        val player = object : AudioPlayer {
+            override suspend fun play(file: File, volumePercent: Int) {
+                alarm.events += "speak $volumePercent"
+            }
+        }
+        val controller = DoorController(FileStorage(Files.createTempDirectory("duck-test").toFile()), assets, player, this, alarm, ZoneOffset.UTC) { noon }
+        controller.receive(ServerMessage.EmergencySet("C1", emergency()))
+        controller.receive(ServerMessage.AudioPlayRequest("A1", AudioPlay("n1", "Evacuate", "asset1", "0".repeat(64), 10, urgent = true)))
+        testScheduler.advanceUntilIdle()
+        assertEquals(listOf("start fire 1.00", "duck", "speak 100", "unduck"), alarm.events)
+
+        // An ordinary announcement does not touch the alarm.
+        controller.receive(ServerMessage.AudioPlayRequest("A2", AudioPlay("n2", "Bell", "asset2", "0".repeat(64), 10)))
+        testScheduler.advanceUntilIdle()
+        assertEquals(listOf("start fire 1.00", "duck", "speak 100", "unduck", "speak 80"), alarm.events)
     }
 
     @Test

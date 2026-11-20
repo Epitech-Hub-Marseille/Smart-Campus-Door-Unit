@@ -141,6 +141,8 @@ data class AudioPlay(
     val size: Long,
     /** Emergencies only: plays at full volume and ignores quiet hours. */
     val urgent: Boolean = false,
+    /** Set on the read-out of an emergency, a test included (a test is not `urgent`): the alarm steps back while it plays. */
+    val emergencyId: String? = null,
 )
 
 /** One booking of the room, times in ms since epoch (server time, like every other timestamp). */

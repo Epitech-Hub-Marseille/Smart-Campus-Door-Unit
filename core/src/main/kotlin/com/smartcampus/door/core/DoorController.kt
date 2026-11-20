@@ -279,11 +279,12 @@ class DoorController(
         val volume = if (request.urgent) 100 else state.audio.volume
         scope.launch {
             // The read-out of an emergency is heard over the alarm, which steps back for as long as it speaks.
-            if (request.urgent) alarm.duck(true)
+            val overAlarm = request.urgent || request.emergencyId != null
+            if (overAlarm) alarm.duck(true)
             try {
                 runCatching { player.play(file, volume) }
             } finally {
-                if (request.urgent) alarm.duck(false)
+                if (overAlarm) alarm.duck(false)
             }
         }
     }

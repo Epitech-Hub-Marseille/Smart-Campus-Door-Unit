@@ -7,6 +7,22 @@ import com.smartcampus.door.core.audio.CardTone
 import com.smartcampus.door.core.audio.CardTones
 import com.smartcampus.door.core.audio.NoTones
 import com.smartcampus.door.core.audio.NoAlarm
+import com.smartcampus.door.core.audio.LivePlayer
+import com.smartcampus.door.core.audio.Microphone
+import com.smartcampus.door.core.audio.NoLivePlayer
+import com.smartcampus.door.core.audio.NoMicrophone
+import com.smartcampus.door.core.protocol.LIVE_MAX_CHUNK_BYTES
+import com.smartcampus.door.core.protocol.CallPeer
+import com.smartcampus.door.core.protocol.CallStates
+import com.smartcampus.door.core.protocol.callAnswerPayload
+import com.smartcampus.door.core.protocol.callAudioPayload
+import com.smartcampus.door.core.protocol.callHangupPayload
+import com.smartcampus.door.core.protocol.callRequestPayload
+import com.smartcampus.door.core.protocol.emptyPayload
+import kotlinx.coroutines.delay
+import com.smartcampus.door.core.protocol.liveChunkPayload
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
 import com.smartcampus.door.core.net.LinkEvent
 import com.smartcampus.door.core.net.MessageSink
 import com.smartcampus.door.core.protocol.CardOutcome
@@ -52,6 +68,12 @@ fun alarmLevel(emergency: Emergency, inQuietHours: Boolean): Float = when {
 
 private const val POWER_CUT_LEVEL = 0.35f
 
+/** Slices of voice waiting to be sent (a few seconds): beyond that the link is too slow and the oldest speech is not worth keeping. */
+private const val OUTGOING_BACKLOG = 64
+
+/** An incoming call rings this often. */
+private const val RING_INTERVAL_MS = 1_800L
+
 /** Recent command ids kept so a replayed command is acknowledged again but never run twice. */
 private const val REMEMBERED_IDS = 200
 
@@ -89,6 +111,32 @@ fun isAccessGranted(outcome: String): Boolean =
 /** What the server said about the last menu action; the menu shows it under the buttons. */
 data class ActionOutcome(val action: String, val ok: Boolean, val error: String?)
 
+/** Where a call to another terminal is: this one is ringing it, is being rung, has answered and is connecting, or is talking. */
+enum class CallPhase { CALLING, INCOMING, CONNECTING, ACTIVE }
+
+/** A call this terminal is part of. [peer] is the other terminal's name as a person knows it (its room). */
+data class CallSession(val callId: String, val peer: String, val phase: CallPhase)
+
+/**
+ * The intercom side of the terminal. [awaitingCard]: "Announcement" was chosen and the person has not presented their card yet.
+ * [announcer]: the person the server accepted, who may now go on the air. [onAir]: the microphone is open and the server is
+ * passing the voice on to [screens] screens (never this one: it has the microphone).
+ * [choosingPeer] with [peers]: the list of terminals to call is on screen (null peers while it loads). [call]: the call this terminal
+ * is in. [callNotice]: why the last call did not happen, for the screen to say.
+ */
+data class IntercomState(
+    val awaitingCard: Boolean = false,
+    val announcer: String? = null,
+    val starting: Boolean = false,
+    val onAir: Boolean = false,
+    val screens: Int = 0,
+    val error: String? = null,
+    val choosingPeer: Boolean = false,
+    val peers: List<CallPeer>? = null,
+    val call: CallSession? = null,
+    val callNotice: String? = null,
+)
+
 /**
  * The brain of the door unit: turns what the server sends into the state the screen shows, keeps
  * that state on disk (offline mode), acknowledges every command once and reports back.
@@ -101,6 +149,9 @@ class DoorController(
     private val alarm: AlarmPlayer = NoAlarm,
     private val zone: ZoneId = ZoneId.systemDefault(),
     private val tones: CardTones = NoTones,
+    private val live: LivePlayer = NoLivePlayer,
+    private val callPlayer: LivePlayer = NoLivePlayer,
+    private val microphone: Microphone = NoMicrophone,
     private val clock: () -> Long = System::currentTimeMillis,
 ) {
     private val _door = MutableStateFlow(loadState())
@@ -114,6 +165,14 @@ class DoorController(
     private val pendingTaps = LinkedHashMap<String, Long>()
     private val pendingActions = LinkedHashMap<String, String>()
     private var lastTap: Pair<String, Long>? = null
+    private val _intercom = MutableStateFlow(IntercomState())
+    /** The id of this terminal's own `live.start` while it is waiting for an answer or on the air; also the id of its stream. */
+    private var announceId: String? = null
+    private var outgoing: Channel<ByteArray>? = null
+    private var sender: Job? = null
+    private var directoryId: String? = null
+    private var ringJob: Job? = null
+    private var hearing = false
     private val _fonts = MutableStateFlow<Map<String, File>>(emptyMap())
     private var fontsRequested: Map<String, ThemeFont> = emptyMap()
 
@@ -129,6 +188,8 @@ class DoorController(
 
     /** Verified font files of the current theme, by slot. A slot appears once its file is downloaded and its hash matched. */
     val fonts: StateFlow<Map<String, File>> = _fonts.asStateFlow()
+
+    val intercom: StateFlow<IntercomState> = _intercom.asStateFlow()
 
     /** Non-null while the maintenance menu is open. */
     val maintenance: StateFlow<MaintenanceSession?> = _maintenance.asStateFlow()
@@ -150,6 +211,11 @@ class DoorController(
                 _maintenance.value = null
                 pendingTaps.clear()
                 pendingActions.clear()
+                // A voice that was being passed on, or a microphone that was open, ends with the link.
+                endIntercom()
+                endCall(null)
+                _intercom.update { it.copy(choosingPeer = false, peers = null) }
+                stopHearing()
             }
             is LinkEvent.Message -> handle(event.message)
         }
@@ -222,6 +288,15 @@ class DoorController(
         val event = CardEvent(result.outcome, result.name, now)
         _lastCard.value = event
         playTone(if (event.granted) CardTone.GRANTED else CardTone.DENIED)
+        // "Announcement" was chosen first: the card is for that, not for the maintenance menu.
+        if (_intercom.value.awaitingCard && _door.value.emergency == null) {
+            if (result.outcome == CardOutcome.MAINTENANCE && result.menu?.canAnnounce == true) {
+                _intercom.update { it.copy(awaitingCard = false, announcer = result.name.orEmpty(), error = null) }
+            } else {
+                _intercom.update { it.copy(error = "This card cannot make announcements") }
+            }
+            return
+        }
         // An emergency owns the screen: nobody should be able to cover it with a menu.
         val allowed = result.maintenance && result.outcome == CardOutcome.MAINTENANCE && _door.value.emergency == null
         if (allowed) _maintenance.value = MaintenanceSession(result.name.orEmpty(), now, result.menu ?: CardMenu())
@@ -235,6 +310,17 @@ class DoorController(
         if (message is ServerMessage.MaintenanceResult) {
             handleMaintenanceResult(message)
             return
+        }
+        when (message) {
+            is ServerMessage.LiveStart -> return startHearing()
+            is ServerMessage.LiveChunk -> return if (hearing) live.write(message.pcm) else Unit
+            is ServerMessage.LiveEnd -> return if (message.streamId == announceId) onServerEndedAnnouncement() else stopHearing()
+            is ServerMessage.IntercomResult -> return handleIntercomResult(message)
+            is ServerMessage.CallDirectory -> return handleDirectory(message)
+            is ServerMessage.CallIncoming -> return handleIncoming(message)
+            is ServerMessage.CallState -> return handleCallState(message)
+            is ServerMessage.CallAudio -> return if (message.callId == _intercom.value.call?.callId) callPlayer.write(message.pcm) else Unit
+            else -> Unit
         }
         if (message is ServerMessage.SessionReady) {
             update(_door.value.withDesired(message.desired, message.serverTime, clock()))
@@ -253,6 +339,256 @@ class DoorController(
         remember(message.id)
         acknowledge(message.id)
         report()
+    }
+
+    // ---- intercom ----
+
+    /** The person chose "Announcement": the next card, if it may announce, opens the microphone panel instead of the menu. */
+    fun beginAnnouncement() {
+        if (_intercom.value.call != null) return
+        _intercom.update { it.copy(awaitingCard = true, announcer = null, error = null) }
+    }
+
+    /** Leaves the announcement flow, closing the microphone if it was open. */
+    fun cancelAnnouncement() {
+        endAnnouncementStream(tellServer = true)
+        endIntercom(reset = true)
+    }
+
+    /** Asks the server to put this person on the air. The microphone opens when the server agrees. */
+    suspend fun goOnAir() {
+        val state = _intercom.value
+        val sink = session
+        if (state.announcer == null || state.onAir || state.starting) return
+        if (state.call != null) {
+            _intercom.update { it.copy(error = "Finish the call first") }
+            return
+        }
+        if (sink == null) {
+            _intercom.update { it.copy(error = "Not connected to the server") }
+            return
+        }
+        val id = newUlid(clock())
+        announceId = id
+        _intercom.update { it.copy(starting = true, error = null) }
+        sink.send("live.start", emptyPayload(), id)
+    }
+
+    /** The person is done speaking. */
+    fun goOffAir() = endAnnouncementStream(tellServer = true)
+
+    // ---- calls between terminals ----
+
+    /** Shows the terminals that can be called; asks the server for the list. */
+    suspend fun openCallList() {
+        val sink = session
+        if (sink == null) {
+            _intercom.update { it.copy(callNotice = "Not connected to the server") }
+            return
+        }
+        val id = newUlid(clock())
+        directoryId = id
+        _intercom.update { it.copy(choosingPeer = true, peers = null, callNotice = null) }
+        sink.send("call.list", emptyPayload(), id)
+    }
+
+    fun closeCallList() {
+        directoryId = null
+        _intercom.update { it.copy(choosingPeer = false, peers = null) }
+    }
+
+    /** Rings [peer]. Its microphone stays closed until it accepts. */
+    suspend fun callPeer(peer: CallPeer) {
+        val sink = session ?: return
+        val state = _intercom.value
+        if (state.call != null || state.announcer != null || state.awaitingCard) return
+        val id = newUlid(clock())
+        _intercom.update { it.copy(choosingPeer = false, peers = null, call = CallSession(id, peer.name, CallPhase.CALLING), callNotice = null) }
+        sink.send("call.request", callRequestPayload(peer.id), id)
+    }
+
+    /** The person at this terminal answers or declines the incoming call. */
+    suspend fun answerCall(accept: Boolean) {
+        val call = _intercom.value.call ?: return
+        if (call.phase != CallPhase.INCOMING) return
+        stopRing()
+        if (accept) _intercom.update { it.copy(call = call.copy(phase = CallPhase.CONNECTING)) } else _intercom.update { it.copy(call = null) }
+        session?.send("call.answer", callAnswerPayload(call.callId, accept))
+    }
+
+    /** Ends the call from this side (also cancels one that is still ringing). */
+    fun hangUp() {
+        val call = _intercom.value.call ?: return
+        endCall(null)
+        scope.launch { runCatching { session?.send("call.hangup", callHangupPayload(call.callId)) } }
+    }
+
+    fun dismissNotice() = _intercom.update { it.copy(callNotice = null) }
+
+    private fun handleDirectory(result: ServerMessage.CallDirectory) {
+        if (result.ref != directoryId) return
+        _intercom.update { if (it.choosingPeer) it.copy(peers = result.peers) else it }
+    }
+
+    private fun handleIncoming(incoming: ServerMessage.CallIncoming) {
+        val state = _intercom.value
+        val busy = state.call != null || state.announcer != null || state.awaitingCard || state.starting || state.onAir || _door.value.emergency != null
+        if (busy) {
+            // Not a person's decision: the terminal is in the middle of something else, so the caller is told it declined.
+            scope.launch { session?.send("call.answer", callAnswerPayload(incoming.callId, false)) }
+            return
+        }
+        _maintenance.value = null
+        directoryId = null
+        _intercom.update { it.copy(choosingPeer = false, peers = null, call = CallSession(incoming.callId, incoming.from, CallPhase.INCOMING), callNotice = null) }
+        startRing()
+    }
+
+    private fun handleCallState(change: ServerMessage.CallState) {
+        val call = _intercom.value.call ?: return
+        if (change.callId != call.callId) return
+        val peer = change.peer ?: call.peer
+        when (change.state) {
+            CallStates.RINGING -> _intercom.update { it.copy(call = call.copy(peer = peer)) }
+            CallStates.ACTIVE -> {
+                stopRing()
+                val opened = startMicrophone { pcm -> session?.send("call.audio", callAudioPayload(call.callId, pcm)) }
+                if (!opened) {
+                    hangUp()
+                    _intercom.update { it.copy(callNotice = "The microphone cannot be opened") }
+                    return
+                }
+                callPlayer.start()
+                _intercom.update { it.copy(call = call.copy(peer = peer, phase = CallPhase.ACTIVE)) }
+            }
+            "declined" -> endCall("$peer declined the call")
+            "busy" -> endCall("$peer is busy")
+            "unavailable" -> endCall("$peer cannot be reached")
+            "timeout" -> endCall(if (call.phase == CallPhase.INCOMING) null else "$peer did not answer")
+            else -> endCall(null)
+        }
+    }
+
+    /** Leaves the call on this side: ringing stops, the microphone closes and the speaker is released. [notice] says why, if it needs saying. */
+    private fun endCall(notice: String?) {
+        val call = _intercom.value.call ?: return
+        stopRing()
+        if (call.phase == CallPhase.ACTIVE) {
+            stopMicrophone()
+            callPlayer.stop()
+        }
+        _intercom.update { it.copy(call = null, callNotice = notice) }
+    }
+
+    private fun startRing() {
+        ringJob?.cancel()
+        ringJob = scope.launch {
+            while (true) {
+                playTone(CardTone.GRANTED)
+                delay(RING_INTERVAL_MS)
+            }
+        }
+    }
+
+    private fun stopRing() {
+        ringJob?.cancel()
+        ringJob = null
+    }
+
+    /**
+     * Opens the microphone and sends what it hears through [send], in order. Returns false when the microphone cannot be opened.
+     * The microphone's own thread never waits: a link too slow for the voice drops it rather than growing without end.
+     */
+    private fun startMicrophone(send: suspend (ByteArray) -> Unit): Boolean {
+        val channel = Channel<ByteArray>(OUTGOING_BACKLOG)
+        val opened = microphone.start { chunk ->
+            for (at in chunk.indices step LIVE_MAX_CHUNK_BYTES) channel.trySend(chunk.copyOfRange(at, minOf(at + LIVE_MAX_CHUNK_BYTES, chunk.size)))
+        }
+        if (!opened) {
+            channel.close()
+            return false
+        }
+        outgoing = channel
+        sender = scope.launch {
+            // One sender, so the slices leave in the order they were spoken (each message's counter follows the send order).
+            try {
+                for (pcm in channel) send(pcm)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // The link broke: the disconnect handler ends the announcement or the call.
+            }
+        }
+        return true
+    }
+
+    /** Closes the microphone. The returned job completes once everything already spoken has been sent. */
+    private fun stopMicrophone(): Job? {
+        microphone.stop()
+        outgoing?.close()
+        outgoing = null
+        return sender.also { sender = null }
+    }
+
+    private fun handleIntercomResult(result: ServerMessage.IntercomResult) {
+        if (result.ref != announceId) return
+        if (!result.ok) {
+            announceId = null
+            _intercom.update { it.copy(starting = false, error = result.error ?: "The announcement was refused") }
+            playTone(CardTone.DENIED)
+            return
+        }
+        if (!startMicrophone { pcm -> session?.send("live.chunk", liveChunkPayload(pcm)) }) {
+            announceId = null
+            _intercom.update { it.copy(starting = false, error = "The microphone cannot be opened") }
+            // The server was told it was on the air: tell it it is not.
+            scope.launch { session?.send("live.end", emptyPayload()) }
+            return
+        }
+        _intercom.update { it.copy(starting = false, onAir = true, screens = result.deviceCount ?: 0) }
+        playTone(CardTone.GRANTED)
+    }
+
+    /** The server ended our stream (time limit, or the link was too quiet for too long). */
+    private fun onServerEndedAnnouncement() = endAnnouncementStream(tellServer = false)
+
+    private fun endAnnouncementStream(tellServer: Boolean) {
+        // Only the announcement's own microphone: the same one serves a call, which this must not cut.
+        if (announceId == null) {
+            _intercom.update { it.copy(starting = false, onAir = false, screens = 0) }
+            return
+        }
+        val wasOpen = outgoing != null
+        val job = if (wasOpen) stopMicrophone() else null
+        announceId = null
+        _intercom.update { it.copy(starting = false, onAir = false, screens = 0) }
+        // The slices still queued go out first, then the end: closing the channel lets the sender drain it.
+        if (tellServer && wasOpen) scope.launch {
+            job?.join()
+            runCatching { session?.send("live.end", emptyPayload()) }
+        }
+    }
+
+    /** Ends the announcement and, with [reset], the whole flow (card, panel, error). Safe to call when nothing is going on. */
+    private fun endIntercom(reset: Boolean = false) {
+        endAnnouncementStream(tellServer = false)
+        if (reset || _intercom.value.awaitingCard || _intercom.value.announcer != null) {
+            _intercom.update { IntercomState(choosingPeer = it.choosingPeer, peers = it.peers, call = it.call, callNotice = it.callNotice) }
+        }
+    }
+
+    private fun startHearing() {
+        if (announceId != null) return // never play back what this terminal is saying: it would feed on itself
+        hearing = true
+        live.start()
+        alarm.duck(true)
+    }
+
+    private fun stopHearing() {
+        if (!hearing) return
+        hearing = false
+        live.stop()
+        alarm.duck(false)
     }
 
     private suspend fun handleAudio(message: ServerMessage.AudioPlayRequest) {
@@ -347,6 +683,8 @@ class DoorController(
             val current = pruned.emergency
             if (current != null) {
                 _maintenance.value = null
+                endIntercom(reset = true)
+                endCall(null)
                 soundAlarm(current)
             } else {
                 alarm.stop()

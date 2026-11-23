@@ -115,7 +115,10 @@ class DoorApp : Application() {
         val identity: DeviceIdentity = AndroidKeystoreIdentity.loadOrCreate()
         val deviceId = checkNotNull(config.deviceId) { "an enrolled device has an id" }
         val assets = AssetDownloader(config.serverUrl, deviceId, identity, File(cacheDir, "audio"))
-        val controller = DoorController(storage, assets, MediaPlayerAudio(), scope, AudioTrackAlarm(this), tones = ToneGeneratorCards())
+        val controller = DoorController(
+            storage, assets, MediaPlayerAudio(), scope, AudioTrackAlarm(this),
+            tones = ToneGeneratorCards(), live = AudioTrackLive(this), callPlayer = AudioTrackLive(this, voiceCall = true), microphone = AudioRecordMicrophone(),
+        )
         val serverKey = parseServerKey(B64.decode(config.serverPublicKey))
         _phase.value = AppPhase.Running(controller)
 
@@ -126,6 +129,12 @@ class DoorApp : Application() {
             }
         }
     }
+
+    /** Set by the activity, which is what can show the system's permission dialog. */
+    var askForMicrophone: () -> Unit = {}
+
+    fun hasMicrophonePermission(): Boolean =
+        checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED
 
     /** Called from the NFC thread with the serial number of a card held to the antenna. */
     fun onCardRead(cardUid: String) {

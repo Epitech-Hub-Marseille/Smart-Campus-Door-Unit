@@ -77,6 +77,18 @@ on now ("Now: ...") or the next ("Next: ..."), below the status, unless the cons
 with the server clock, past bookings drop off by themselves, and the list is ignored when it belongs to another room than the one the
 terminal is linked to (a moved terminal must not show its old room's bookings).
 
+## Intercom: calls and live announcements
+
+Nothing shows on the door but a barely visible tick at the right edge. Put a finger on the right edge and slide it towards the middle to open the extras menu.
+**Intercom** lists the other door terminals (offline ones greyed out); choosing one rings it. The called terminal takes over its screen with **Answer** and **Decline**
+and its microphone stays closed until it answers (nobody can open a room's microphone from outside); then both sides talk through the server until either hangs up.
+A terminal that is announcing, in an emergency or already in a call declines by itself. **Make an announcement** asks for a card first: the server accepts only an
+administrator's or operator's, the same grant as the maintenance menu, and the unit opens an announcement panel instead of the menu. **Go on air** sends `live.start`;
+the microphone opens only when the server answers `intercom.result` ok, then 100 ms slices of 16 kHz mono PCM go out as `live.chunk` in order until **Stop**. The server opens the stream with
+the manual override chime and passes the voice to every *other* screen: this terminal never plays its own microphone, so it cannot howl. An announcement from someone else plays on the
+alarm stream (`AudioTrackLive`) and an alarm steps back while it speaks; a call plays on the voice-communication stream, the one Android's echo canceller listens to. The microphone
+permission is asked the first time it is needed; an emergency or losing the link closes the microphone at once.
+
 ## Emergency alerts
 
 `emergency.set` replaces the whole screen with a terminal-style bulletin, the same as on the Faculty screens: the system's name and the door code, the

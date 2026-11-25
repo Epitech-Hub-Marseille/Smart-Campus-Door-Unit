@@ -1,5 +1,6 @@
 package com.smartcampus.door.core.protocol
 
+import com.smartcampus.door.core.util.B64
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
@@ -8,6 +9,7 @@ import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.decodeFromJsonElement
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
@@ -197,7 +199,17 @@ data class MenuStatus(val key: String, val label: String, val color: String, val
 
 /** What the server offers the person whose card opened the menu. */
 @Serializable
-data class CardMenu(val statuses: List<MenuStatus> = emptyList(), val canRevoke: Boolean = false)
+data class CardMenu(val statuses: List<MenuStatus> = emptyList(), val canRevoke: Boolean = false, val canAnnounce: Boolean = false)
+
+/** Another door terminal this one may call, and whether it is connected right now. */
+@Serializable
+data class CallPeer(val id: String, val name: String, val online: Boolean)
+
+/** The states of a call between two terminals, as the server names them. */
+object CallStates {
+    const val RINGING = "ringing"
+    const val ACTIVE = "active"
+}
 
 /** The actions of the maintenance menu, as the server names them. */
 object MaintenanceActions {
@@ -241,6 +253,29 @@ sealed interface ServerMessage {
 
     /** The answer to a `maintenance.action` ([ref] is its id). Not a command either. */
     data class MaintenanceResult(override val id: String, val ref: String, val action: String, val ok: Boolean, val error: String?) : ServerMessage
+
+    /** Someone is speaking live (a microphone announcement). Not a command: never acknowledged, and one that is missed is missed. */
+    data class LiveStart(override val id: String, val streamId: String, val from: String) : ServerMessage
+
+    /** A slice of the voice: 16 kHz mono 16-bit little-endian PCM, already decoded from base64. */
+    class LiveChunk(override val id: String, val streamId: String, val pcm: ByteArray) : ServerMessage
+
+    data class LiveEnd(override val id: String, val streamId: String) : ServerMessage
+
+    /** The answer to this terminal's `live.start` or `call.request` ([ref] is its id). Not a command either. */
+    data class IntercomResult(override val id: String, val ref: String, val kind: String, val ok: Boolean, val error: String?, val deviceCount: Int?) : ServerMessage
+
+    /** The answer to `call.list` ([ref] is its id): the terminals that can be called. Not a command. */
+    data class CallDirectory(override val id: String, val ref: String, val peers: List<CallPeer>) : ServerMessage
+
+    /** Another terminal is calling this one. Not a command: a call that rings late is one nobody waits for. */
+    data class CallIncoming(override val id: String, val callId: String, val from: String) : ServerMessage
+
+    /** The call changed state (see [CallStates], or an end: declined, ended, busy, unavailable, timeout). [peer] names the other side. */
+    data class CallState(override val id: String, val callId: String, val state: String, val peer: String?) : ServerMessage
+
+    /** The other side's voice, 16 kHz mono 16-bit PCM. */
+    class CallAudio(override val id: String, val callId: String, val pcm: ByteArray) : ServerMessage
 
     /** A valid command for another kind of device (e.g. access.acl.sync): acknowledged, not acted on. */
     data class Ignored(override val id: String, val type: String) : ServerMessage
@@ -311,6 +346,21 @@ private fun decode(id: String, type: String, payload: JsonObject): ServerMessage
             ok = payload["ok"]!!.jsonPrimitive.boolean,
             error = payload["error"]?.jsonPrimitive?.contentOrNull,
         )
+        "live.start" -> ServerMessage.LiveStart(id, payload["streamId"]!!.jsonPrimitive.content, payload["from"]?.jsonPrimitive?.contentOrNull.orEmpty())
+        "live.chunk" -> ServerMessage.LiveChunk(id, payload["streamId"]!!.jsonPrimitive.content, runCatching { B64.decode(payload["data"]!!.jsonPrimitive.content) }.getOrDefault(ByteArray(0)))
+        "live.end" -> ServerMessage.LiveEnd(id, payload["streamId"]!!.jsonPrimitive.content)
+        "intercom.result" -> ServerMessage.IntercomResult(
+            id,
+            ref = payload["ref"]!!.jsonPrimitive.content,
+            kind = payload["kind"]!!.jsonPrimitive.content,
+            ok = payload["ok"]!!.jsonPrimitive.boolean,
+            error = payload["error"]?.jsonPrimitive?.contentOrNull,
+            deviceCount = payload["deviceCount"]?.jsonPrimitive?.long?.toInt(),
+        )
+        "call.directory" -> ServerMessage.CallDirectory(id, payload["ref"]!!.jsonPrimitive.content, payload["peers"]!!.jsonArray.map { it.jsonObject.decode<CallPeer>() })
+        "call.incoming" -> ServerMessage.CallIncoming(id, payload["callId"]!!.jsonPrimitive.content, payload["from"]?.jsonPrimitive?.contentOrNull.orEmpty())
+        "call.state" -> ServerMessage.CallState(id, payload["callId"]!!.jsonPrimitive.content, payload["state"]!!.jsonPrimitive.content, payload["peer"]?.jsonPrimitive?.contentOrNull)
+        "call.audio" -> ServerMessage.CallAudio(id, payload["callId"]!!.jsonPrimitive.content, runCatching { B64.decode(payload["data"]!!.jsonPrimitive.content) }.getOrDefault(ByteArray(0)))
         else -> ServerMessage.Ignored(id, type)
     }
 
@@ -345,4 +395,30 @@ fun badgePayload(badgeUid: String, atMs: Long): JsonObject = buildJsonObject {
 fun maintenanceActionPayload(action: String, status: String? = null): JsonObject = buildJsonObject {
     put("action", action)
     status?.let { put("status", it) }
+}
+
+/** Payload of a message that carries nothing (`live.start`, `live.end`, `call.request`). */
+fun emptyPayload(): JsonObject = JsonObject(emptyMap())
+
+/** A slice of the microphone: [pcm] is 16 kHz mono 16-bit little-endian, at most [LIVE_MAX_CHUNK_BYTES]. */
+fun liveChunkPayload(pcm: ByteArray): JsonObject = buildJsonObject { put("data", B64.encode(pcm)) }
+
+/** Largest slice of live audio the server takes in one message (a quarter of a second). */
+const val LIVE_MAX_CHUNK_BYTES = 8_000
+
+/** Live voice is 16 kHz mono 16-bit PCM. */
+const val LIVE_SAMPLE_RATE = 16_000
+
+fun callRequestPayload(target: String): JsonObject = buildJsonObject { put("target", target) }
+
+fun callAnswerPayload(callId: String, accept: Boolean): JsonObject = buildJsonObject {
+    put("callId", callId)
+    put("accept", accept)
+}
+
+fun callHangupPayload(callId: String): JsonObject = buildJsonObject { put("callId", callId) }
+
+fun callAudioPayload(callId: String, pcm: ByteArray): JsonObject = buildJsonObject {
+    put("callId", callId)
+    put("data", B64.encode(pcm))
 }

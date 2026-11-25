@@ -35,6 +35,36 @@ object NoAlarm : AlarmPlayer {
     override fun stop() = Unit
 }
 
+/**
+ * Plays the voice of someone speaking live: 16 kHz mono 16-bit PCM written as it arrives. [write] returns at once; the platform
+ * implementation owns the thread and keeps a short cushion so uneven delivery does not crackle.
+ */
+interface LivePlayer {
+    fun start()
+    fun write(pcm: ByteArray)
+    fun stop()
+}
+
+object NoLivePlayer : LivePlayer {
+    override fun start() = Unit
+    override fun write(pcm: ByteArray) = Unit
+    override fun stop() = Unit
+}
+
+/**
+ * The terminal's microphone, for a live announcement. [start] returns false when it cannot be opened (no permission, no
+ * microphone); otherwise [onChunk] is called from the platform's own thread with 16 kHz mono 16-bit PCM, in order, until [stop].
+ */
+interface Microphone {
+    fun start(onChunk: (ByteArray) -> Unit): Boolean
+    fun stop()
+}
+
+object NoMicrophone : Microphone {
+    override fun start(onChunk: (ByteArray) -> Unit) = false
+    override fun stop() = Unit
+}
+
 /** Where sounds come from. A seam so the controller can be tested without a server. */
 interface AssetSource {
     suspend fun fetch(assetId: String, sha256: String, size: Long): File

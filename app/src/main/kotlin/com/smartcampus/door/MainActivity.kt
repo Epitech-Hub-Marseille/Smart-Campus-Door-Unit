@@ -1,10 +1,12 @@
 package com.smartcampus.door
 
+import android.Manifest
 import android.os.Build
 import android.os.Bundle
 import android.view.View
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.core.view.WindowCompat
@@ -20,6 +22,9 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enterKioskMode()
         val app = application as DoorApp
+        // Asked once, when someone first chooses to make an announcement; whatever the answer, the announcement flow reports it.
+        val microphone = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+        app.askForMicrophone = { microphone.launch(Manifest.permission.RECORD_AUDIO) }
         cards = NfcCardReader(this, app::onCardRead)
         setContent {
             DoorTheme {

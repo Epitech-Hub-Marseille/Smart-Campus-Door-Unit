@@ -74,6 +74,8 @@ private fun RunningScreen(phase: AppPhase.Running, app: DoorApp) {
     val maintenance by controller.maintenance.collectAsState()
     val card by controller.lastCard.collectAsState()
     val outcome by controller.actionOutcome.collectAsState()
+    val intercom by controller.intercom.collectAsState()
+    var extrasOpen by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
     // Restart is local: the server only records it, so the app restarts once the server has said ok.
@@ -97,6 +99,13 @@ private fun RunningScreen(phase: AppPhase.Running, app: DoorApp) {
     val session = maintenance
     when {
         shown != null -> CardResultScreen(shown)
+        intercom.call != null -> CallScreen(
+            call = intercom.call!!,
+            onNeedMicrophone = { if (!app.hasMicrophonePermission()) app.askForMicrophone() },
+            onAnswer = { scope.launch { controller.answerCall(true) } },
+            onDecline = { scope.launch { controller.answerCall(false) } },
+            onHangUp = controller::hangUp,
+        )
         session != null -> MaintenanceScreen(
             session = session,
             info = app.maintenanceInfo(),
@@ -106,6 +115,31 @@ private fun RunningScreen(phase: AppPhase.Running, app: DoorApp) {
             onAction = { action, status -> scope.launch { controller.maintenanceAction(action, status) } },
             onClose = controller::closeMaintenance,
         )
+        intercom.announcer != null -> AnnouncerScreen(
+            name = intercom.announcer.orEmpty(),
+            intercom = intercom,
+            onGoOnAir = { scope.launch { controller.goOnAir() } },
+            onGoOffAir = controller::goOffAir,
+            onClose = controller::cancelAnnouncement,
+        )
+        extrasOpen || intercom.awaitingCard || intercom.choosingPeer -> ExtrasMenu(
+            intercom = intercom,
+            onIntercom = {
+                if (!app.hasMicrophonePermission()) app.askForMicrophone()
+                scope.launch { controller.openCallList() }
+            },
+            onCallPeer = { peer -> scope.launch { controller.callPeer(peer) } },
+            onCloseList = controller::closeCallList,
+            onAnnounce = {
+                // The microphone needs the user's yes once; asking now means the dialog is not in the way of the announcement itself.
+                if (!app.hasMicrophonePermission()) app.askForMicrophone()
+                controller.beginAnnouncement()
+            },
+            onCancelAnnounce = { controller.cancelAnnouncement(); extrasOpen = false },
+            onDismissNotice = controller::dismissNotice,
+            onClose = { controller.cancelAnnouncement(); controller.closeCallList(); controller.dismissNotice(); extrasOpen = false },
+        )
+        else -> ExtrasEntry(onOpen = { extrasOpen = true })
     }
 }
 

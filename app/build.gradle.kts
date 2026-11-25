@@ -13,8 +13,8 @@ android {
         // Android 6. Older terminals are not supported: the Keystore only does ECDSA from API 23.
         minSdk = 23
         targetSdk = 35
-        versionCode = 6
-        versionName = "0.1.5"
+        versionCode = 8
+        versionName = "0.1.7"
     }
 
     buildFeatures {

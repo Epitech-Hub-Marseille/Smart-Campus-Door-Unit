@@ -207,3 +207,9 @@ A theme may also name font files for three slots: `body` (all text), `heading` (
 downloads each one like a sound (signed request, SHA-256 checked, cached by asset id, so after a restart they load without a network) and the
 screen uses it once verified. Android reads TrueType and OpenType only: a WOFF or WOFF2 font is not downloaded, and a slot without a usable file keeps
 the font family of the tokens.
+
+## License
+
+Released under the [PolyForm Noncommercial License 1.0.0](LICENSE). You may use, modify and share the
+software for any noncommercial purpose; commercial use, including selling it, is not permitted.
+This is a source-available license, not an open-source one.
